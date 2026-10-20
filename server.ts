@@ -3673,16 +3673,133 @@ async function bootstrapServer() {
     }
   });
 
-  // POST /api/engine/resend-history (Re-dispatches an already converted product from Histórico)
+  // POST /api/engine/resend-history (Re-dispatches or retries an offer from Histórico)
   app.post('/api/engine/resend-history', async (req, res) => {
     const { historyId } = req.body || {};
     const item = serverHistory.find((h) => h.id === historyId);
-    if (!item || item.status === 'error' || !item.convertedText) {
-      res.status(400).json({
+    if (!item) {
+      res.status(404).json({
         ok: false,
-        error: 'Item de histórico inválido para reenvio.',
+        error: 'Item de histórico não encontrado para reenvio.',
       });
       return;
+    }
+
+    // Branch A: Item had an error or no convertedText -> re-run replication pipeline
+    if (item.status === 'error' || !item.convertedText) {
+      try {
+        let activeRoute =
+          engineConfig.routes.find((r) => r.id === item.routeId && r.active) ||
+          engineConfig.routes.find((r) => r.sourceRoomId === item.sourceRoomId && r.active) ||
+          engineConfig.routes.find((r) => r.active);
+
+        const destRoomId =
+          activeRoute?.destinationRoomId ||
+          item.destinationRoomId ||
+          engineConfig.selectedDraftPair?.destinationRoomId ||
+          waState.syncedGroups.find((g) => g.role === 'admin')?.id ||
+          waState.syncedGroups[0]?.id;
+
+        if (!destRoomId) {
+          res.status(400).json({
+            ok: false,
+            error: 'Nenhum grupo de destino configurado para enviar a oferta.',
+          });
+          return;
+        }
+
+        if (!activeRoute) {
+          activeRoute = {
+            id: item.routeId || `route-retry-${Date.now()}`,
+            name: 'Reenvio Manual',
+            sourceRoomId: item.sourceRoomId || 'manual',
+            destinationRoomId: destRoomId,
+            active: true,
+            totalConverted: 0,
+            lastDispatchedAt: 'Agora',
+          };
+        }
+
+        const rawTextToReprocess =
+          item.originalText &&
+          item.originalText.trim().length > 0 &&
+          !item.originalText.startsWith('[Imagem sem legenda]')
+            ? item.originalText
+            : [item.productTitle, item.originalUrl]
+                .filter(
+                  (s) =>
+                    s &&
+                    !s.includes('Erro de entrega') &&
+                    !s.includes('Link interceptado')
+                )
+                .join('\n');
+
+        let textPayload = rawTextToReprocess || '';
+        if (
+          item.originalUrl &&
+          item.originalUrl.startsWith('http') &&
+          !textPayload.includes(item.originalUrl)
+        ) {
+          textPayload = textPayload ? `${textPayload}\n${item.originalUrl}` : item.originalUrl;
+        }
+
+        if (!textPayload || !textPayload.includes('http')) {
+          res.status(400).json({
+            ok: false,
+            error: 'Esta oferta não contém um link válido salvo para reprocessamento.',
+          });
+          return;
+        }
+
+        const retryResult = await executeReplicationForRoute({
+          rawText: textPayload,
+          sourceRoomId: item.sourceRoomId || activeRoute.sourceRoomId,
+          route: activeRoute,
+        });
+
+        if (!retryResult.ok) {
+          if (retryResult.error) {
+            item.errorReason = retryResult.error;
+            item.timestamp = new Date().toLocaleTimeString('pt-BR', {
+              hour: '2-digit',
+              minute: '2-digit',
+              second: '2-digit',
+            });
+            saveServerHistory(serverHistory);
+          }
+          res.status(400).json({
+            ok: false,
+            error:
+              retryResult.error ||
+              'Ainda não foi possível enviar. Verifique as credenciais ou a conexão.',
+            serverHistory,
+          });
+          return;
+        }
+
+        // Successfully sent! Remove old error entry from serverHistory if a new historyItem was created
+        if (retryResult.historyItem) {
+          serverHistory = serverHistory.filter((h) => h.id !== item.id);
+          if (!serverHistory.some((h) => h.id === retryResult.historyItem!.id)) {
+            serverHistory = [retryResult.historyItem, ...serverHistory];
+          }
+          pruneExpiredHistory();
+          saveServerHistory(serverHistory);
+        }
+
+        res.json({
+          ok: true,
+          serverHistory,
+          historyItem: retryResult.historyItem,
+        });
+        return;
+      } catch (err: any) {
+        res.status(500).json({
+          ok: false,
+          error: err?.message || 'Erro ao processar nova tentativa de envio.',
+        });
+        return;
+      }
     }
 
     try {

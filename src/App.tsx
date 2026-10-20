@@ -1272,16 +1272,16 @@ export default function App() {
         body: JSON.stringify({ historyId: item.id }),
       });
       const data = await res.json();
+      if (Array.isArray(data.serverHistory)) {
+        setHistory(data.serverHistory);
+      }
       if (data.ok) {
-        if (Array.isArray(data.serverHistory)) {
-          setHistory(data.serverHistory);
-        }
-        triggerToast(`Oferta "${item.productTitle.slice(0, 30)}..." enviada novamente com sucesso!`);
+        triggerToast(`Oferta "${item.productTitle.slice(0, 30)}..." enviada com sucesso!`);
       } else {
-        triggerToast(`Não foi possível reenviar: ${data.error || 'Verifique a conexão do WhatsApp.'}`);
+        triggerToast(`Não foi possível enviar: ${data.error || 'Verifique as credenciais ou a conexão.'}`);
       }
     } catch {
-      triggerToast('Erro ao reenviar oferta para o grupo de destino.');
+      triggerToast('Erro ao processar nova tentativa de envio.');
     } finally {
       setResendingHistoryId(null);
     }
@@ -4549,6 +4549,25 @@ export default function App() {
                           </div>
 
                           <div className="flex items-center gap-2 shrink-0">
+                            <button
+                              type="button"
+                              disabled={resendingHistoryId === item.id}
+                              onClick={() => handleResendHistoryItem(item)}
+                              className="px-3.5 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-slate-950 text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer shadow-sm"
+                              title="Tentar enviar novamente após arrumar o erro"
+                            >
+                              <RefreshCw
+                                className={`w-3.5 h-3.5 ${
+                                  resendingHistoryId === item.id ? 'animate-spin' : ''
+                                }`}
+                              />
+                              <span>
+                                {resendingHistoryId === item.id
+                                  ? 'Tentando...'
+                                  : 'Tentar Novamente'}
+                              </span>
+                            </button>
+
                             <button
                               type="button"
                               onClick={() => handleDeleteHistoryItem(item.id)}
