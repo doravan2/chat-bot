@@ -1,6 +1,6 @@
 {
-  "summary": "Plano de implementação concluído: Proteção anti-duplicidade inteligente de 8 horas por grupo destino com resolução de ID canônico (Shopee, Mercado Livre, Amazon, AliExpress) e similaridade semântica de títulos entre grupos concorrentes.",
-  "updatedAt": "2026-10-19T04:21:50.963403846Z",
-  "requestFeedback": true,
-  "userFacing": true
+  "summary":  "Plano detalhado para eliminar os erros intermitentes de envio quando a fonte é Telegram:\n- Adicionar fila com espaçamento anti-sobrecarga (rate-limit queue) para envios simultâneos ao WhatsApp.\n- Implementar fallback imediato para link comissionado direto quando a API de link curto demorar ou oscilar.\n- Adicionar retry automático transparente com backoff antes de gerar qualquer erro no Histórico.\n- Extrair links embutidos (text_link) e botões inline de posts do Telegram.",
+  "updatedAt":  "2026-10-20T17:09:16.526675877Z",
+  "requestFeedback":  true,
+  "userFacing":  true
 }

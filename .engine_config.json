@@ -24,17 +24,14 @@
   "routes": [
     {
       "id": "route-1792369703379",
-      "name": "#149 Estilo Mascul +7 fontes → Teste 2",
+      "name": "#149 Estilo Mascul +4 fontes → Teste 2",
       "sourceRoomId": "wa-120363408409920489@g.us",
       "sourceRoomIds": [
         "wa-120363408409920489@g.us",
         "wa-120363430050036244@g.us",
         "wa-120363426077506293@g.us",
         "wa-120363431143083503@g.us",
-        "wa-120363405017849183@newsletter",
-        "tg--1002059819521",
-        "wa-120363425505706835@newsletter",
-        "wa-120363366190391773@g.us"
+        "wa-120363405017849183@newsletter"
       ],
       "destinationRoomId": "wa-120363412443597636@g.us",
       "active": true,
@@ -58,8 +55,7 @@
     "antiWatermark": {
       "enabled": true,
       "blacklistedRoomIds": [
-        "wa-120363408409920489@g.us",
-        "wa-120363431143083503@g.us"
+        "wa-120363408409920489@g.us"
       ],
       "strategy": "og_image"
     },
@@ -80,7 +76,7 @@
       "kind": "channel",
       "membersCount": 1,
       "role": "member",
-      "syncedAt": "Canal sincronizado às 00:20"
+      "syncedAt": "Canal sincronizado às 00:49"
     },
     {
       "id": "wa-120363408409920489@g.us",
@@ -88,9 +84,9 @@
       "name": "#149 Estilo Masculino | Ofertas & Achados",
       "platform": "whatsapp",
       "kind": "group",
-      "membersCount": 917,
+      "membersCount": 925,
       "role": "member",
-      "syncedAt": "Sincronizado às 00:20"
+      "syncedAt": "Sincronizado às 00:49"
     },
     {
       "id": "wa-120363366190391773@g.us",
@@ -98,9 +94,9 @@
       "name": "Garimpeiros - Tênis 13",
       "platform": "whatsapp",
       "kind": "group",
-      "membersCount": 915,
+      "membersCount": 918,
       "role": "member",
-      "syncedAt": "Sincronizado às 00:20"
+      "syncedAt": "Sincronizado às 00:49"
     },
     {
       "id": "wa-120363430050036244@g.us",
@@ -108,9 +104,9 @@
       "name": "LIPE INDICA | Promoções 🤑 #14",
       "platform": "whatsapp",
       "kind": "group",
-      "membersCount": 475,
+      "membersCount": 468,
       "role": "member",
-      "syncedAt": "Sincronizado às 00:20"
+      "syncedAt": "Sincronizado às 00:49"
     },
     {
       "id": "wa-120363426077506293@g.us",
@@ -118,9 +114,9 @@
       "name": "LIPE INDICA / Ofertas Gerais #2",
       "platform": "whatsapp",
       "kind": "group",
-      "membersCount": 454,
+      "membersCount": 451,
       "role": "member",
-      "syncedAt": "Sincronizado às 00:20"
+      "syncedAt": "Sincronizado às 00:49"
     },
     {
       "id": "tg--1002059819521",
@@ -128,9 +124,9 @@
       "name": "MARIU (Promoções e Indicações)",
       "platform": "telegram",
       "kind": "channel",
-      "membersCount": 38972,
+      "membersCount": 38985,
       "role": "admin",
-      "syncedAt": "Sincronizado via Telegram API às 17:15"
+      "syncedAt": "Sincronizado via Telegram API às 23:09"
     },
     {
       "id": "wa-120363412443597636@g.us",
@@ -140,7 +136,7 @@
       "kind": "group",
       "membersCount": 1,
       "role": "admin",
-      "syncedAt": "Sincronizado às 00:20"
+      "syncedAt": "Sincronizado às 00:49"
     },
     {
       "id": "wa-120363431143083503@g.us",
@@ -150,7 +146,7 @@
       "kind": "group",
       "membersCount": 1,
       "role": "admin",
-      "syncedAt": "Sincronizado às 00:20"
+      "syncedAt": "Sincronizado às 00:49"
     },
     {
       "id": "wa-120363405017849183@newsletter",
@@ -160,7 +156,7 @@
       "kind": "channel",
       "membersCount": 1,
       "role": "member",
-      "syncedAt": "Canal sincronizado às 00:20"
+      "syncedAt": "Canal sincronizado às 00:49"
     },
     {
       "id": "wa-120363413506893279@newsletter",
@@ -183,7 +179,7 @@
       "syncedAt": "Canal sincronizado às 19:16"
     }
   ],
-  "telegramBotToken": "sdfsfs",
+  "telegramBotToken": "8374562058:AAGmr8LFhnCy5Xb5SnvrJQEaXEeOydm_Wac",
   "roleOverrides": {
     "wa-556984339727-1581812380@g.us": "member",
     "556984339727-1581812380@g.us": "member",

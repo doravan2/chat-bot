@@ -159,20 +159,20 @@ function sanitizeDemoCredentials(creds: AffiliateCredentials): AffiliateCredenti
 
   return {
     amazon: {
-      enabled: Boolean(amzTag.trim()) && Boolean(creds.amazon?.enabled),
+      enabled: Boolean(amzTag.trim()) && (creds.amazon?.enabled ?? true),
       associateTag: amzTag,
     },
     mercadoLivre: {
       enabled:
         (Boolean(mlTag.trim()) || Boolean(mlCookie.trim())) &&
-        Boolean(creds.mercadoLivre?.enabled),
+        (creds.mercadoLivre?.enabled ?? true),
       affiliateTag: mlTag,
       sessionCookie: mlCookie,
     },
     shopee: {
       enabled:
         (Boolean(shopeeAppId.trim()) || Boolean(shopeeSecret.trim())) &&
-        Boolean(creds.shopee?.enabled),
+        (creds.shopee?.enabled ?? true),
       appId: shopeeAppId,
       apiSecret: shopeeSecret,
     },
@@ -181,7 +181,7 @@ function sanitizeDemoCredentials(creds: AffiliateCredentials): AffiliateCredenti
         (Boolean(aliAppKey.trim()) ||
           Boolean(aliTracking.trim()) ||
           Boolean(aliSecret.trim())) &&
-        Boolean(creds.aliExpress?.enabled),
+        (creds.aliExpress?.enabled ?? true),
       appKey: aliAppKey,
       trackingId: aliTracking,
       appSecret: aliSecret,

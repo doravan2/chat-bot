@@ -1,43 +1,36 @@
-# Plano de Implementação: Filtro Anti-Duplicidade Inteligente de 8 Horas por Grupo Destino [CONCLUÍDO]
+# Plano de Correção: Eliminação de Erros Intermitentes em Envios com Origem Telegram
 
-## Diagnóstico do Problema (Imagens 1 e 2)
-Nas imagens enviadas:
-- **Imagem 2 (03:13:35)**: Grupo fonte *LIPE INDICA* enviou para o destino *Teste 2*:
-  - Produto: `Suporte Articulado Para 2 Monitores 13 a 32 Pistão a Gás Zinnia Nimbo 210 Branco`
-  - Link: `https://s.shopee.com.br/7kxrXG52rr`
-- **Imagem 1 (03:18:24)**: Grupo fonte *MARIU* enviou para o mesmo destino *Teste 2*:
-  - Produto: `Suporte Articulado Para 2 Monitores 13 a 32 Pistão a Gás Zinnia Nimbo 210 Preto,ZNO-ZNNB0210-BK01-V2`
-  - Link: `https://s.shopee.com.br/1qcuzVupZm`
-
-### Causa Raiz Identificada
-1. **Links Curtos Distintos**: Cada grupo gerou um link encurtado próprio (`7kxrXG52rr` vs `1qcuzVupZm`), apontando para o mesmo produto na Shopee.
-2. **Variações no Título ("Branco" vs "Preto")**: Uma simples palavra de cor ou código de modelo fez com que o sistema anterior não reconhecesse a duplicidade.
-3. **Escopo entre Grupos Fontes**: Faltava um escopo unificado de bloqueio por Grupo Destino (8 horas) que interceptasse ofertas vindas de origens diferentes.
+## Diagnóstico da Causa Raiz
+Quando a fonte é um grupo ou canal do **Telegram**, o polling do Telegram frequentemente recebe múltiplos posts simultâneos (`data.result`). O servidor tentava disparar todas as mensagens quase no mesmo milissegundo para o grupo de destino no WhatsApp via Baileys socket.
+Isso causava:
+1. **Sobrecarga no Socket do WhatsApp**: Envio concorrente de mídias/mensagens fazia o WhatsApp disparar erro de rede/timeout momentâneo (`Falha ao entregar no grupo destino`).
+2. **Ausência de Retry Automático**: O sistema gravava o erro imediatamente no Histórico em vez de tentar novamente após 1 segundo. Ao clicar em "Tentar Novamente", como o canal estava desobstruído, o envio funcionava de primeira.
+3. **Bloqueio por Timeout em APIs de Afiliados**: Quando o Mercado Livre ou outra API demorava mais de 3-4 segundos para encurtar o link, o sistema abortava em vez de usar imediatamente o link comissionado direto (`fallback.convertedUrl` com a tag de afiliado do usuário).
+4. **Links Ocultos em Entidades do Telegram**: Posts com links no formato `[Compre Aqui](url)` ou em botões inline não tinham a URL concatenada no texto principal.
 
 ---
 
-## Implementação Concluída
+## Modificações Propostas
 
-### 1. Resolução Canônica do ID Real do Produto (`server.ts`)
-- **Shopee**: Extração direta do `item_id` real (`shp_${item_id}`) a partir da URL descompactada (`/product/`, `-i.`, `itemid=`, universal links) e dos metadados HTML (`og:url`, `canonical`, `"itemid":`, `"itemId":`). Produtos com variações de cor/modelo compartilham o mesmo `item_id`, garantindo detecção imediata.
-- **Mercado Livre**: Extração de `MLB` numérico canônico a partir do link descompactado ou tags estruturadas.
-- **Amazon**: Extração do código `ASIN` de 10 dígitos.
-- **AliExpress**: Extração do `productId` numérico.
+### 1. Fila de Despacho com Intervalo Seguro (Anti-Sobrecarga)
+- Em `server.ts`, implementar fila sequencial (`dispatchQueue`) com intervalo mínimo de 1,2 a 1,8 segundos entre envios para o WhatsApp.
+- Evita que uma rajada de posts do Telegram sature o socket do WhatsApp ou provoque desconexão temporária.
 
-### 2. Comparador Semântico de Títulos e Remoção de Variações
-- **Remoção de Códigos de Modelo**: Expressões como `ZNO-ZNNB0210-BK01-V2` são removidas antes da tokenização para não gerar falsas diferenças.
-- **Stopwords de Variação**: Cores (`branco`, `preto`, `azul`, etc.), voltagens (`110v`, `220v`, `bivolt`) e especificações de variação são desconsideradas na comparação de identidade.
-- **Algoritmo de Similaridade**: Sobreposição $\ge 70\%$ entre os termos essenciais classifica os anúncios como o mesmo produto, bloqueando o envio repetido.
+### 2. Fallback Imediato para Link Comissionado Direto
+- Se a API de encurtamento do Mercado Livre, Shopee ou AliExpress oscilar ou demorar mais de 3 segundos, utilizar imediatamente o link comissionado oficial direto gerado localmente com as credenciais do usuário (`fallback.convertedUrl` contendo a tag de afiliado).
+- Garante que a comissão do usuário seja sempre preservada sem travar o disparo do produto.
 
-### 3. Bloqueio Estrito de 8 Horas por Grupo Destino
-- **Chave de Destino Unificada**: O sistema cruza os identificadores do grupo destino (`destinationRoomId`, `destinationJid`, `roomCode`), garantindo que se o Grupo A já mandou o produto para *Teste 2*, o Grupo B não poderá mandar o mesmo produto para *Teste 2* dentro da janela de 8 horas.
-- **Supressão de Envio & Alerta Limpo**: Mensagens repetidas são descartadas sem poluir o WhatsApp/Telegram e sem gerar falsos alertas de erro.
-- **Monitor de Escuta**: Registra o evento como `REPETIDA (BLOQUEADA PELO ANTI-DUPLICIDADE)` exibindo o motivo e há quanto tempo o produto original foi enviado.
-- **Persistência em Disco**: O cache de 8 horas é salvo em `.engine_dispatched_offers.json` e integrado com o `.engine_history.json`, resistindo a reinicializações.
+### 3. Retry Automático Transparente no Servidor
+- Se o WhatsApp ou a rede falhar na primeira tentativa de entrega, o servidor executará automaticamente até 2 tentativas com intervalo de 1,5s antes de registrar qualquer falha no Histórico.
+- O produto será entregue sozinho sem necessidade de o usuário precisar clicar manualmente em "Tentar Novamente".
+
+### 4. Extração Completa de Links e Mídias do Telegram
+- Em `pollTelegramUpdates`, extrair URLs contidas em `post.entities` (`type: "text_link"`), `post.caption_entities` e botões de `reply_markup.inline_keyboard`.
+- Concatenar as URLs encontradas ao texto para garantir que nenhuma oferta fique sem o link de afiliado.
 
 ---
 
-## Verificação & Validação
-- **TypeScript**: `npm run lint` validado com zero erros de tipo (`tsc --noEmit`).
-- **Build**: `compile_applet` executado com sucesso total.
-- **Servidor Dev**: Dev server reiniciado e operando com as novas regras ativas.
+## Verificação e Testes
+1. Validar via `lint_applet` e `compile_applet`.
+2. Simular disparo de mensagens rápidas com link de afiliado para garantir entrega sequencial contínua sem erro.
+3. Testar a geração de link com fallback comissionado direto em caso de latência de API.

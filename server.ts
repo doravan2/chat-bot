@@ -116,8 +116,21 @@ function loadEngineConfig(): EngineRuntimeConfig {
         parsed.credentials?.mercadoLivre?.sessionCookie?.includes('ml_sess_active_99812x') &&
         parsed.credentials?.shopee?.apiSecret?.startsWith('shp_live_98f7');
       configSyncedAt = isSavedDemo ? 0 : Date.now();
+      const loadedCreds = parsed.credentials || INITIAL_CREDENTIALS;
+      if (loadedCreds.mercadoLivre?.affiliateTag || loadedCreds.mercadoLivre?.sessionCookie) {
+        loadedCreds.mercadoLivre.enabled = loadedCreds.mercadoLivre.enabled ?? true;
+      }
+      if (loadedCreds.shopee?.appId && loadedCreds.shopee?.apiSecret) {
+        loadedCreds.shopee.enabled = loadedCreds.shopee.enabled ?? true;
+      }
+      if (loadedCreds.aliExpress?.appKey && (loadedCreds.aliExpress?.trackingId || loadedCreds.aliExpress?.appSecret)) {
+        loadedCreds.aliExpress.enabled = loadedCreds.aliExpress.enabled ?? true;
+      }
+      if (loadedCreds.amazon?.associateTag) {
+        loadedCreds.amazon.enabled = loadedCreds.amazon.enabled ?? true;
+      }
       return {
-        credentials: parsed.credentials || INITIAL_CREDENTIALS,
+        credentials: loadedCreds,
         routes: parsed.routes || INITIAL_ROUTES,
         rules: parsed.rules || INITIAL_RULES,
         rooms: parsed.rooms || INITIAL_ROOMS,
@@ -1085,7 +1098,7 @@ async function generateOfficialMercadoLivreShortLink(
             urls: [cleanProductUrl],
             tag: cleanTag,
           }),
-          signal: AbortSignal.timeout(4000),
+          signal: AbortSignal.timeout(2500),
         }
       );
 
@@ -1139,7 +1152,7 @@ async function generateOfficialShopeeShortLink(
         Authorization: `SHA256 Credential=${appId}, Timestamp=${ts}, Signature=${signature}`,
       },
       body,
-      signal: AbortSignal.timeout(4000),
+      signal: AbortSignal.timeout(2500),
     });
 
     if (res.ok) {
@@ -1207,7 +1220,7 @@ async function generateOfficialAliExpressShortLink(
     const qs = new URLSearchParams(params).toString();
     const res = await fetch(`https://api-sg.aliexpress.com/sync?${qs}`, {
       method: 'POST',
-      signal: AbortSignal.timeout(4000),
+      signal: AbortSignal.timeout(2500),
     });
 
     if (res.ok) {
@@ -1247,30 +1260,74 @@ function extractCleanProductTitle(rawText: string, pageTitle?: string | null): s
   return (lines[0] || 'Produto Interceptado').slice(0, 80);
 }
 
+function isValidRawImageBuffer(buf: Buffer | null | undefined): buf is Buffer {
+  if (!buf || !Buffer.isBuffer(buf) || buf.length < 64) return false;
+  // JPEG (FF D8 FF), PNG (89 50 4E 47), GIF (47 49 46), or WebP (52 49 46 46)
+  const isJpeg = buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff;
+  const isPng = buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47;
+  const isGif = buf[0] === 0x47 && buf[1] === 0x49 && buf[2] === 0x46;
+  const isWebp = buf[0] === 0x52 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x46;
+  return isJpeg || isPng || isGif || isWebp;
+}
+
+async function downloadTelegramPhotoBuffer(
+  token: string,
+  photoArray: any[]
+): Promise<Buffer | null> {
+  if (!token || !Array.isArray(photoArray) || photoArray.length === 0) return null;
+  try {
+    const largest = photoArray[photoArray.length - 1];
+    if (!largest?.file_id) return null;
+    const fileRes = await fetch(
+      `https://api.telegram.org/bot${token}/getFile?file_id=${encodeURIComponent(largest.file_id)}`,
+      { signal: AbortSignal.timeout(3500) }
+    );
+    if (!fileRes.ok) return null;
+    const fileData: any = await fileRes.json();
+    const filePath = fileData?.result?.file_path;
+    if (!filePath) return null;
+    const imgRes = await fetch(
+      `https://api.telegram.org/file/bot${token}/${filePath}`,
+      { signal: AbortSignal.timeout(4500) }
+    );
+    if (!imgRes.ok) return null;
+    const arrBuf = await imgRes.arrayBuffer();
+    const buf = Buffer.from(arrBuf);
+    if (isValidRawImageBuffer(buf)) {
+      return buf;
+    }
+  } catch {
+    // ignore transient telegram photo error
+  }
+  return null;
+}
+
 function isMarketplaceApiConfigured(
   mp: MarketplaceId,
   credentials: AffiliateCredentials
 ): { ok: boolean; errorReason?: string } {
   if (mp === 'mercadoLivre') {
-    if (!credentials.mercadoLivre.enabled) {
+    const cookie = (credentials.mercadoLivre?.sessionCookie || '').trim();
+    const tag = (credentials.mercadoLivre?.affiliateTag || '').trim();
+    const hasAnyConfig = Boolean(tag || cookie);
+    if (!credentials.mercadoLivre?.enabled && !hasAnyConfig) {
       return { ok: false, errorReason: 'Integração Mercado Livre desativada' };
     }
-    const cookie = (credentials.mercadoLivre.sessionCookie || '').trim();
-    const tag = (credentials.mercadoLivre.affiliateTag || '').trim();
-    if (!cookie || !tag || cookie.includes('ml_sess_active_99812x')) {
+    if (!cookie && !tag) {
       return {
         ok: false,
-        errorReason: 'API do Mercado Livre não configurada direito (Cookie/Tag ausente)',
+        errorReason: 'API do Mercado Livre não configurada direito (Cookie ou Tag ausente)',
       };
     }
     return { ok: true };
   }
   if (mp === 'shopee') {
-    if (!credentials.shopee.enabled) {
+    const appId = (credentials.shopee?.appId || '').trim();
+    const secret = (credentials.shopee?.apiSecret || '').trim();
+    const hasAnyConfig = Boolean(appId && secret);
+    if (!credentials.shopee?.enabled && !hasAnyConfig) {
       return { ok: false, errorReason: 'Integração Shopee desativada' };
     }
-    const appId = (credentials.shopee.appId || '').trim();
-    const secret = (credentials.shopee.apiSecret || '').trim();
     if (!appId || !secret || secret.startsWith('shp_live_98f7')) {
       return {
         ok: false,
@@ -1280,13 +1337,14 @@ function isMarketplaceApiConfigured(
     return { ok: true };
   }
   if (mp === 'aliExpress') {
-    if (!credentials.aliExpress.enabled) {
+    const appKey = (credentials.aliExpress?.appKey || '').trim();
+    const appSecret = (credentials.aliExpress?.appSecret || '').trim();
+    const trackingId = (credentials.aliExpress?.trackingId || '').trim();
+    const hasAnyConfig = Boolean(appKey && (trackingId || appSecret));
+    if (!credentials.aliExpress?.enabled && !hasAnyConfig) {
       return { ok: false, errorReason: 'Integração AliExpress desativada' };
     }
-    const appKey = (credentials.aliExpress.appKey || '').trim();
-    const appSecret = (credentials.aliExpress.appSecret || '').trim();
-    const trackingId = (credentials.aliExpress.trackingId || '').trim();
-    if (!appKey || !appSecret || !trackingId || appSecret.startsWith('ali_sec_77a8')) {
+    if (!appKey || (!appSecret && !trackingId) || appSecret.startsWith('ali_sec_77a8')) {
       return {
         ok: false,
         errorReason: 'API do AliExpress não configurada direito (App Key/Secret inválido)',
@@ -1295,10 +1353,10 @@ function isMarketplaceApiConfigured(
     return { ok: true };
   }
   if (mp === 'amazon') {
-    if (!credentials.amazon.enabled) {
+    const tag = (credentials.amazon?.associateTag || '').trim();
+    if (!credentials.amazon?.enabled && !tag) {
       return { ok: false, errorReason: 'Integração Amazon desativada' };
     }
-    const tag = (credentials.amazon.associateTag || '').trim();
     if (!tag) {
       return { ok: false, errorReason: 'Tag da Amazon não configurada direito' };
     }
@@ -1387,65 +1445,93 @@ async function resolveAndConvertUrlsInText(
     let htmlChunk = '';
     let httpStatus = 200;
 
-    try {
-      const res = await fetch(originalUrl, {
-        method: 'GET',
-        redirect: 'follow',
-        headers: {
-          'User-Agent':
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-          Accept: 'text/html,application/xhtml+xml',
-          'Accept-Language': 'pt-BR,pt;q=0.9',
-        },
-        signal: AbortSignal.timeout(4500),
-      });
+    let fetchSuccess = false;
+    for (let fetchAttempt = 1; fetchAttempt <= 2; fetchAttempt++) {
+      try {
+        const timeoutMs = fetchAttempt === 1 ? 3500 : 4500;
+        const res = await fetch(originalUrl, {
+          method: 'GET',
+          redirect: 'follow',
+          headers: {
+            'User-Agent':
+              'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+            Accept: 'text/html,application/xhtml+xml',
+            'Accept-Language': 'pt-BR,pt;q=0.9',
+          },
+          signal: AbortSignal.timeout(timeoutMs),
+        });
 
-      httpStatus = res.status;
-      if (httpStatus === 404 || httpStatus === 410 || httpStatus >= 500) {
-        if (!directMp) {
-          // Non-marketplace link failed — skip it rather than blocking the offer
-          continue;
+        httpStatus = res.status;
+        if (httpStatus === 404 || httpStatus === 410 || httpStatus >= 500) {
+          if (!directMp) {
+            // Non-marketplace link failed — skip it rather than blocking the offer
+            break;
+          }
+          if (fetchAttempt === 1 && httpStatus >= 500) {
+            await new Promise((r) => setTimeout(r, 400));
+            continue;
+          }
+          return {
+            preconvertedUrlMap,
+            ogImageUrl,
+            validationError: `Link quebrado ou página inexistente (Erro ${httpStatus})`,
+            failedOriginalUrl: originalUrl,
+            detectedMarketplace: directMp,
+            extractedProductTitle,
+          };
         }
-        return {
-          preconvertedUrlMap,
-          ogImageUrl,
-          validationError: `Link quebrado ou página inexistente (Erro ${httpStatus})`,
-          failedOriginalUrl: originalUrl,
-          detectedMarketplace: directMp,
-          extractedProductTitle,
-        };
-      }
 
-      const finalUrl = res.url || '';
-      const isBlockedRedirect =
-        finalUrl.includes('login') ||
-        finalUrl.includes('account-verification') ||
-        finalUrl.includes('security') ||
-        finalUrl.includes('captcha') ||
-        finalUrl.includes('signin');
+        const finalUrl = res.url || '';
+        const isBlockedRedirect =
+          finalUrl.includes('login') ||
+          finalUrl.includes('account-verification') ||
+          finalUrl.includes('security') ||
+          finalUrl.includes('captcha') ||
+          finalUrl.includes('signin');
 
-      if (finalUrl && finalUrl !== originalUrl) {
-        if (!isBlockedRedirect) {
-          expandedUrl = finalUrl;
-        } else {
-          try {
-            const parsedRedirect = new URL(finalUrl);
-            const goUrl =
-              parsedRedirect.searchParams.get('go') ||
-              parsedRedirect.searchParams.get('redirect') ||
-              parsedRedirect.searchParams.get('url');
-            if (goUrl && goUrl.startsWith('http')) {
-              expandedUrl = goUrl;
+        if (finalUrl && finalUrl !== originalUrl) {
+          if (!isBlockedRedirect) {
+            expandedUrl = finalUrl;
+          } else {
+            try {
+              const parsedRedirect = new URL(finalUrl);
+              const goUrl =
+                parsedRedirect.searchParams.get('go') ||
+                parsedRedirect.searchParams.get('redirect') ||
+                parsedRedirect.searchParams.get('url');
+              if (goUrl && goUrl.startsWith('http')) {
+                expandedUrl = goUrl;
+              }
+            } catch {
+              // keep originalUrl
             }
-          } catch {
-            // keep originalUrl
           }
         }
-      }
 
-      htmlChunk = await res.text();
-    } catch {
+        htmlChunk = await res.text();
+        fetchSuccess = true;
+        break;
+      } catch {
+        if (fetchAttempt === 1) {
+          await new Promise((r) => setTimeout(r, 400));
+          continue;
+        }
+      }
+    }
+
+    if (!fetchSuccess) {
       if (!directMp) {
+        continue;
+      }
+      // If expanding timed out or was blocked, immediately fallback to direct commissioned affiliate link
+      const directFallback = buildConvertedUrl(originalUrl, directMp, credentials);
+      if (directFallback.convertedUrl) {
+        preconvertedUrlMap[originalUrl] = {
+          marketplace: directMp,
+          sku: directFallback.sku,
+          convertedUrl: directFallback.convertedUrl,
+        };
+        detectedMarketplace = directMp;
         continue;
       }
       return {
@@ -1664,63 +1750,64 @@ async function resolveAndConvertUrlsInText(
       }
     }
 
-    // 6. Generate Official Affiliate Link via Marketplace API (Fail if API conversion fails!)
+    // 6. Generate Official Affiliate Link via Marketplace API or direct comissioned fallback
     if (mp === 'mercadoLivre') {
       const fallback = buildConvertedUrl(expandedUrl, 'mercadoLivre', credentials);
-      const officialShort = await generateOfficialMercadoLivreShortLink(
-        expandedUrl,
-        credentials
-      );
-      if (!officialShort) {
-        return {
-          preconvertedUrlMap,
-          ogImageUrl,
-          validationError: 'Falha na API do Mercado Livre (Cookie expirado ou produto sem afiliação)',
-          failedOriginalUrl: originalUrl,
-          detectedMarketplace: 'mercadoLivre',
-          extractedProductTitle,
-        };
+      let convertedUrlToUse: string | null = null;
+      try {
+        convertedUrlToUse = await Promise.race([
+          generateOfficialMercadoLivreShortLink(expandedUrl, credentials),
+          new Promise<null>((resolve) => setTimeout(() => resolve(null), 2500)),
+        ]);
+      } catch {
+        convertedUrlToUse = null;
+      }
+      // If shortener API times out or fails, use direct comissioned affiliate link with user's tag
+      if (!convertedUrlToUse || !convertedUrlToUse.startsWith('http')) {
+        convertedUrlToUse = fallback.convertedUrl;
       }
       preconvertedUrlMap[originalUrl] = {
         marketplace: 'mercadoLivre',
         sku: fallback.sku,
-        convertedUrl: officialShort,
+        convertedUrl: convertedUrlToUse,
       };
     } else if (mp === 'shopee') {
       const fallback = buildConvertedUrl(expandedUrl, 'shopee', credentials);
-      const officialShort = await generateOfficialShopeeShortLink(expandedUrl, credentials);
-      if (!officialShort) {
-        return {
-          preconvertedUrlMap,
-          ogImageUrl,
-          validationError: 'Falha na API da Shopee (verifique App ID e Secret ou link inválido)',
-          failedOriginalUrl: originalUrl,
-          detectedMarketplace: 'shopee',
-          extractedProductTitle,
-        };
+      let convertedUrlToUse: string | null = null;
+      try {
+        convertedUrlToUse = await Promise.race([
+          generateOfficialShopeeShortLink(expandedUrl, credentials),
+          new Promise<null>((resolve) => setTimeout(() => resolve(null), 2500)),
+        ]);
+      } catch {
+        convertedUrlToUse = null;
+      }
+      if (!convertedUrlToUse || !convertedUrlToUse.startsWith('http')) {
+        convertedUrlToUse = fallback.convertedUrl;
       }
       preconvertedUrlMap[originalUrl] = {
         marketplace: 'shopee',
         sku: fallback.sku,
-        convertedUrl: officialShort,
+        convertedUrl: convertedUrlToUse,
       };
     } else if (mp === 'aliExpress') {
       const fallback = buildConvertedUrl(expandedUrl, 'aliExpress', credentials);
-      const officialShort = await generateOfficialAliExpressShortLink(expandedUrl, credentials);
-      if (!officialShort) {
-        return {
-          preconvertedUrlMap,
-          ogImageUrl,
-          validationError: 'Falha na API do AliExpress (verifique App Key/Secret ou produto sem estoque)',
-          failedOriginalUrl: originalUrl,
-          detectedMarketplace: 'aliExpress',
-          extractedProductTitle,
-        };
+      let convertedUrlToUse: string | null = null;
+      try {
+        convertedUrlToUse = await Promise.race([
+          generateOfficialAliExpressShortLink(expandedUrl, credentials),
+          new Promise<null>((resolve) => setTimeout(() => resolve(null), 2500)),
+        ]);
+      } catch {
+        convertedUrlToUse = null;
+      }
+      if (!convertedUrlToUse || !convertedUrlToUse.startsWith('http')) {
+        convertedUrlToUse = fallback.convertedUrl;
       }
       preconvertedUrlMap[originalUrl] = {
         marketplace: 'aliExpress',
         sku: fallback.sku,
-        convertedUrl: officialShort,
+        convertedUrl: convertedUrlToUse,
       };
     } else if (mp === 'amazon') {
       const fallback = buildConvertedUrl(expandedUrl, 'amazon', credentials);
@@ -1755,6 +1842,27 @@ async function resolveAndConvertUrlsInText(
   };
 }
 
+// Global sequential dispatch queue to prevent Baileys socket overload and rate-limit drops
+let globalDispatchQueuePromise: Promise<any> = Promise.resolve();
+
+function enqueueReplicationDispatch<T>(task: () => Promise<T>): Promise<T> {
+  const runTask = async () => {
+    try {
+      return await task();
+    } finally {
+      // Safe breather between message dispatches to keep Baileys WebSocket stable
+      await new Promise((r) => setTimeout(r, 1400));
+    }
+  };
+
+  const currentChain = globalDispatchQueuePromise.then(runTask, runTask);
+  globalDispatchQueuePromise = currentChain.then(
+    () => {},
+    () => {}
+  );
+  return currentChain;
+}
+
 // Core replication pipeline: validates stock/link/API, converts text, handles image/OG:Image, and dispatches
 async function executeReplicationForRoute(params: {
   rawText: string;
@@ -1763,9 +1871,17 @@ async function executeReplicationForRoute(params: {
   rawBaileysMsg?: any;
   unwrappedContent?: any;
   hasIncomingImage?: boolean;
+  incomingImageBuffer?: Buffer | null;
 }): Promise<{ ok: boolean; error?: string; historyItem?: DispatchHistoryItem }> {
-  const { rawText, sourceRoomId, route, rawBaileysMsg, unwrappedContent, hasIncomingImage } =
-    params;
+  const {
+    rawText,
+    sourceRoomId,
+    route,
+    rawBaileysMsg,
+    unwrappedContent,
+    hasIncomingImage,
+    incomingImageBuffer,
+  } = params;
 
   const nowStr = new Date().toLocaleTimeString('pt-BR', {
     hour: '2-digit',
@@ -1955,17 +2071,7 @@ async function executeReplicationForRoute(params: {
     }
 
     // 4. Determine Image Buffer to send
-    let imageBufferToSend: Buffer | null = null;
-
-    const isValidRawImageBuffer = (buf: Buffer | null | undefined): buf is Buffer => {
-      if (!buf || !Buffer.isBuffer(buf) || buf.length < 64) return false;
-      // JPEG (FF D8 FF), PNG (89 50 4E 47), GIF (47 49 46), or WebP (52 49 46 46)
-      const isJpeg = buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff;
-      const isPng = buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47;
-      const isGif = buf[0] === 0x47 && buf[1] === 0x49 && buf[2] === 0x46;
-      const isWebp = buf[0] === 0x52 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x46;
-      return isJpeg || isPng || isGif || isWebp;
-    };
+    let imageBufferToSend: Buffer | null = incomingImageBuffer || null;
 
     const downloadIncomingWaImage = async (): Promise<Buffer | null> => {
       if (!hasIncomingImage || !rawBaileysMsg) {
@@ -2072,18 +2178,20 @@ async function executeReplicationForRoute(params: {
       return null;
     };
 
-    if (parsed.watermarkIntercepted) {
-      if (engineConfig.rules.antiWatermark.strategy === 'og_image') {
-        imageBufferToSend = (await fetchOgImageBuffer()) || (await downloadIncomingWaImage());
-      } else if (engineConfig.rules.antiWatermark.strategy === 'keep_original') {
-        imageBufferToSend = (await downloadIncomingWaImage()) || (await fetchOgImageBuffer());
+    if (!imageBufferToSend) {
+      if (parsed.watermarkIntercepted) {
+        if (engineConfig.rules.antiWatermark.strategy === 'og_image') {
+          imageBufferToSend = (await fetchOgImageBuffer()) || (await downloadIncomingWaImage());
+        } else if (engineConfig.rules.antiWatermark.strategy === 'keep_original') {
+          imageBufferToSend = (await downloadIncomingWaImage()) || (await fetchOgImageBuffer());
+        }
+      } else {
+        imageBufferToSend =
+          (await downloadIncomingWaImage()) ||
+          (engineConfig.rules.antiWatermark.strategy === 'og_image'
+            ? await fetchOgImageBuffer()
+            : null);
       }
-    } else {
-      imageBufferToSend =
-        (await downloadIncomingWaImage()) ||
-        (engineConfig.rules.antiWatermark.strategy === 'og_image'
-          ? await fetchOgImageBuffer()
-          : null);
     }
 
     // 5. Dispatch to Target Platform
@@ -2106,21 +2214,48 @@ async function executeReplicationForRoute(params: {
       recordBotOutgoingMessage(targetJid, finalMessageText);
 
       let sentMsg: any = null;
-      if (imageBufferToSend) {
+      let lastSendErr: any = null;
+
+      for (let attempt = 1; attempt <= 3; attempt++) {
         try {
-          sentMsg = await activeSock.sendMessage(targetJid, {
-            image: imageBufferToSend,
-            caption: finalMessageText,
-          });
-        } catch {
-          sentMsg = await activeSock.sendMessage(targetJid, {
-            text: finalMessageText,
-          });
+          if (!activeSock || (waState.status as string) !== 'connected') {
+            await new Promise((r) => setTimeout(r, 2000));
+            if (!activeSock || (waState.status as string) !== 'connected') {
+              throw new Error('WhatsApp desconectado durante o envio.');
+            }
+          }
+
+          if (imageBufferToSend) {
+            try {
+              sentMsg = await activeSock.sendMessage(targetJid, {
+                image: imageBufferToSend,
+                caption: finalMessageText,
+              });
+            } catch {
+              // If sending with image fails, fallback immediately to text message
+              sentMsg = await activeSock.sendMessage(targetJid, {
+                text: finalMessageText,
+              });
+            }
+          } else {
+            sentMsg = await activeSock.sendMessage(targetJid, {
+              text: finalMessageText,
+            });
+          }
+          if (sentMsg) {
+            lastSendErr = null;
+            break;
+          }
+        } catch (err: any) {
+          lastSendErr = err;
+          if (attempt < 3) {
+            await new Promise((r) => setTimeout(r, attempt * 1500));
+          }
         }
-      } else {
-        sentMsg = await activeSock.sendMessage(targetJid, {
-          text: finalMessageText,
-        });
+      }
+
+      if (!sentMsg && lastSendErr) {
+        throw lastSendErr;
       }
 
       if (sentMsg?.key?.id) {
@@ -2141,34 +2276,57 @@ async function executeReplicationForRoute(params: {
         return { ok: false, error: errMsg };
       }
 
-      let tgRes: Response;
-      if (ogImageUrl && parsed.watermarkIntercepted) {
-        tgRes = await fetch(`https://api.telegram.org/bot${token}/sendPhoto`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            chat_id: cleanDestJid,
-            photo: ogImageUrl,
-            caption: finalMessageText,
-          }),
-          signal: AbortSignal.timeout(5000),
-        });
-      } else {
-        tgRes = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            chat_id: cleanDestJid,
-            text: finalMessageText,
-          }),
-          signal: AbortSignal.timeout(5000),
-        });
+      let tgSent = false;
+      let lastTgErr: any = null;
+
+      for (let tgAttempt = 1; tgAttempt <= 3; tgAttempt++) {
+        try {
+          let tgRes: Response;
+          if (ogImageUrl && parsed.watermarkIntercepted) {
+            tgRes = await fetch(`https://api.telegram.org/bot${token}/sendPhoto`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                chat_id: cleanDestJid,
+                photo: ogImageUrl,
+                caption: finalMessageText,
+              }),
+              signal: AbortSignal.timeout(5000),
+            });
+          } else {
+            tgRes = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                chat_id: cleanDestJid,
+                text: finalMessageText,
+              }),
+              signal: AbortSignal.timeout(5000),
+            });
+          }
+          if (tgRes.ok) {
+            tgSent = true;
+            lastTgErr = null;
+            break;
+          }
+          const errJson: any = await tgRes.json().catch(() => ({}));
+          lastTgErr = new Error(
+            errJson?.description ||
+              `Falha na API do Telegram (HTTP ${tgRes.status}) ao enviar para o destino.`
+          );
+          if (tgAttempt < 3) {
+            await new Promise((r) => setTimeout(r, 1500));
+          }
+        } catch (err: any) {
+          lastTgErr = err;
+          if (tgAttempt < 3) {
+            await new Promise((r) => setTimeout(r, 1500));
+          }
+        }
       }
-      if (!tgRes.ok) {
-        const errJson: any = await tgRes.json().catch(() => ({}));
-        throw new Error(
-          errJson?.description || `Falha na API do Telegram (HTTP ${tgRes.status}) ao enviar para o destino.`
-        );
+
+      if (!tgSent && lastTgErr) {
+        throw lastTgErr;
       }
     }
 
@@ -2584,14 +2742,16 @@ async function handleIncomingBaileysMessage(msg: any) {
       const matchedSourceId =
         resolveMatchedSourceRoomIdForRoute(route, remoteJid, knownRoom?.name) ||
         route.sourceRoomId;
-      const res = await executeReplicationForRoute({
-        rawText: text,
-        sourceRoomId: matchedSourceId,
-        route,
-        rawBaileysMsg: msg,
-        unwrappedContent,
-        hasIncomingImage: hasImage,
-      });
+      const res = await enqueueReplicationDispatch(() =>
+        executeReplicationForRoute({
+          rawText: text,
+          sourceRoomId: matchedSourceId,
+          route,
+          rawBaileysMsg: msg,
+          unwrappedContent,
+          hasIncomingImage: hasImage,
+        })
+      );
 
       if (res.ok) {
         pushInterceptLog({
@@ -3367,6 +3527,47 @@ async function fetchAndRegisterTelegramChat(
   }
 }
 
+function extractFullTelegramText(post: any): string {
+  let text = String(post?.text || post?.caption || '').trim();
+  const entities = [...(post?.entities || []), ...(post?.caption_entities || [])];
+  const foundUrls: string[] = [];
+
+  for (const ent of entities) {
+    if (ent?.type === 'text_link' && ent?.url && ent.url.startsWith('http')) {
+      foundUrls.push(ent.url);
+    } else if (
+      ent?.type === 'url' &&
+      typeof ent.offset === 'number' &&
+      typeof ent.length === 'number'
+    ) {
+      const extractedUrl = text.substring(ent.offset, ent.offset + ent.length).trim();
+      if (extractedUrl && extractedUrl.startsWith('http')) {
+        foundUrls.push(extractedUrl);
+      }
+    }
+  }
+
+  if (Array.isArray(post?.reply_markup?.inline_keyboard)) {
+    for (const row of post.reply_markup.inline_keyboard) {
+      if (Array.isArray(row)) {
+        for (const btn of row) {
+          if (btn?.url && btn.url.startsWith('http')) {
+            foundUrls.push(btn.url);
+          }
+        }
+      }
+    }
+  }
+
+  for (const u of foundUrls) {
+    if (!text.includes(u)) {
+      text = text ? `${text}\n${u}` : u;
+    }
+  }
+
+  return text;
+}
+
 async function pollTelegramUpdates() {
   if (isPollingTelegram) return;
   const token = engineConfig.telegramBotToken?.trim();
@@ -3423,21 +3624,39 @@ async function pollTelegramUpdates() {
       const chat = post?.chat;
       if (post && chat) {
         const chatIdStr = String(chat.id);
-        const text = String(post.text || post.caption || '').trim();
+        const msgId = String(post.message_id || update.update_id);
+        const dedupeKey = `tg-msg-${chatIdStr}-${msgId}`;
+        if (processedIncomingMsgIds.has(dedupeKey)) continue;
+
+        const text = extractFullTelegramText(post);
         if (!text || text.startsWith('/sync') || text.startsWith('/start')) continue;
 
         const matchingRoutes = findMatchingRoutesForIncoming(chatIdStr, chat.title);
+        if (matchingRoutes.length > 0) {
+          processedIncomingMsgIds.add(dedupeKey);
+        }
+
+        // Pre-download Telegram photo buffer if message has a photo attachment
+        let tgPhotoBuffer: Buffer | null = null;
+        if (Array.isArray(post.photo) && post.photo.length > 0) {
+          tgPhotoBuffer = await downloadTelegramPhotoBuffer(token, post.photo);
+        }
 
         for (const route of matchingRoutes) {
           const matchedSourceId =
             resolveMatchedSourceRoomIdForRoute(route, chatIdStr, chat.title) ||
             route.sourceRoomId;
           const destRoom = findRoomInAllLists(route.destinationRoomId);
-          const res = await executeReplicationForRoute({
-            rawText: text,
-            sourceRoomId: matchedSourceId,
-            route,
-          });
+
+          const res = await enqueueReplicationDispatch(() =>
+            executeReplicationForRoute({
+              rawText: text,
+              sourceRoomId: matchedSourceId,
+              route,
+              hasIncomingImage: Boolean(tgPhotoBuffer),
+              incomingImageBuffer: tgPhotoBuffer,
+            })
+          );
           const preview = text.replace(/\s+/g, ' ').slice(0, 80);
           if (res.ok) {
             pushInterceptLog({
@@ -3460,6 +3679,15 @@ async function pollTelegramUpdates() {
               previewText: preview,
               status: 'duplicate_suppressed',
               detail: res.error,
+            });
+          } else {
+            pushInterceptLog({
+              groupJid: chatIdStr,
+              groupId: `tg-${chatIdStr}`,
+              groupName: chat.title || `Telegram Chat (${chatIdStr})`,
+              previewText: preview,
+              status: 'error',
+              detail: res.error || 'Erro ao enviar para o destino.',
             });
           }
         }
@@ -3751,11 +3979,13 @@ async function bootstrapServer() {
           return;
         }
 
-        const retryResult = await executeReplicationForRoute({
-          rawText: textPayload,
-          sourceRoomId: item.sourceRoomId || activeRoute.sourceRoomId,
-          route: activeRoute,
-        });
+        const retryResult = await enqueueReplicationDispatch(() =>
+          executeReplicationForRoute({
+            rawText: textPayload,
+            sourceRoomId: item.sourceRoomId || activeRoute.sourceRoomId,
+            route: activeRoute,
+          })
+        );
 
         if (!retryResult.ok) {
           if (retryResult.error) {
@@ -4259,11 +4489,13 @@ async function bootstrapServer() {
       return;
     }
 
-    const result = await executeReplicationForRoute({
-      rawText: String(rawText || ''),
-      sourceRoomId: sourceRoomId || targetRoute.sourceRoomId,
-      route: targetRoute,
-    });
+    const result = await enqueueReplicationDispatch(() =>
+      executeReplicationForRoute({
+        rawText: String(rawText || ''),
+        sourceRoomId: sourceRoomId || targetRoute.sourceRoomId,
+        route: targetRoute,
+      })
+    );
 
     res.json({
       ...result,
