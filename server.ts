@@ -829,9 +829,11 @@ function syncAuthBackup() {
     if (!fs.existsSync(AUTH_BACKUP_DIR)) {
       fs.mkdirSync(AUTH_BACKUP_DIR, { recursive: true });
     }
-    const credsPath = path.join(AUTH_DIR, 'creds.json');
-    if (fs.existsSync(credsPath)) {
-      fs.copyFileSync(credsPath, path.join(AUTH_BACKUP_DIR, 'creds.json'));
+    const files = fs.readdirSync(AUTH_DIR);
+    for (const f of files) {
+      try {
+        fs.copyFileSync(path.join(AUTH_DIR, f), path.join(AUTH_BACKUP_DIR, f));
+      } catch {}
     }
   } catch {
     // ignore backup sync error
@@ -840,13 +842,19 @@ function syncAuthBackup() {
 
 function restoreAuthFromBackup() {
   try {
+    if (!fs.existsSync(AUTH_BACKUP_DIR)) return;
+    if (!fs.existsSync(AUTH_DIR)) {
+      fs.mkdirSync(AUTH_DIR, { recursive: true });
+    }
     const mainCreds = path.join(AUTH_DIR, 'creds.json');
-    const backupCreds = path.join(AUTH_BACKUP_DIR, 'creds.json');
-    if (!fs.existsSync(mainCreds) && fs.existsSync(backupCreds)) {
-      if (!fs.existsSync(AUTH_DIR)) {
-        fs.mkdirSync(AUTH_DIR, { recursive: true });
+    const mainFiles = fs.readdirSync(AUTH_DIR);
+    if (!fs.existsSync(mainCreds) || mainFiles.length <= 1) {
+      const backupFiles = fs.readdirSync(AUTH_BACKUP_DIR);
+      for (const f of backupFiles) {
+        try {
+          fs.copyFileSync(path.join(AUTH_BACKUP_DIR, f), path.join(AUTH_DIR, f));
+        } catch {}
       }
-      fs.copyFileSync(backupCreds, mainCreds);
     }
   } catch {
     // ignore backup restore error
@@ -866,18 +874,76 @@ function clearAuthDirectory(forceBackupPurge = false) {
   }
 }
 
-const savedWa = engineConfig.savedWhatsAppSession;
+function hasValidCredsOnDisk(): boolean {
+  try {
+    const credsPath = path.join(AUTH_DIR, 'creds.json');
+    if (!fs.existsSync(credsPath)) return false;
+    const raw = fs.readFileSync(credsPath, 'utf-8');
+    const parsed = JSON.parse(raw);
+    return Boolean(parsed?.me?.id || parsed?.registered);
+  } catch {
+    return false;
+  }
+}
+
+function exportAuthBundle(): Record<string, string> | null {
+  try {
+    if (!hasValidCredsOnDisk()) return null;
+    const files = fs.readdirSync(AUTH_DIR);
+    const bundle: Record<string, string> = {};
+    const preKeys = files.filter((f) => f.startsWith('pre-key-')).slice(-35);
+    const preKeySet = new Set(preKeys);
+    for (const f of files) {
+      if (!f.endsWith('.json')) continue;
+      if (f.startsWith('pre-key-') && !preKeySet.has(f)) continue;
+      try {
+        bundle[f] = fs.readFileSync(path.join(AUTH_DIR, f), 'utf-8');
+      } catch {}
+    }
+    return bundle['creds.json'] ? bundle : null;
+  } catch {
+    return null;
+  }
+}
+
+function importAuthBundle(bundle: Record<string, string> | null | undefined): boolean {
+  try {
+    if (!bundle || typeof bundle !== 'object' || !bundle['creds.json']) return false;
+    const parsedCreds = JSON.parse(bundle['creds.json']);
+    if (!parsedCreds?.me?.id && !parsedCreds?.registered) return false;
+    if (!fs.existsSync(AUTH_DIR)) {
+      fs.mkdirSync(AUTH_DIR, { recursive: true });
+    }
+    if (!fs.existsSync(AUTH_BACKUP_DIR)) {
+      fs.mkdirSync(AUTH_BACKUP_DIR, { recursive: true });
+    }
+    for (const [fileName, content] of Object.entries(bundle)) {
+      if (typeof fileName === 'string' && fileName.endsWith('.json') && typeof content === 'string') {
+        const safeName = path.basename(fileName);
+        fs.writeFileSync(path.join(AUTH_DIR, safeName), content, 'utf-8');
+        fs.writeFileSync(path.join(AUTH_BACKUP_DIR, safeName), content, 'utf-8');
+      }
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+restoreAuthFromBackup();
+const hasInitialDiskCreds = hasValidCredsOnDisk();
+const savedWa = hasInitialDiskCreds ? engineConfig.savedWhatsAppSession : undefined;
 const waState: WhatsAppSessionState = {
-  status: savedWa?.phoneNumber ? 'reconnecting' : 'connecting',
+  status: hasInitialDiskCreds ? 'reconnecting' : 'connecting',
   qrDataUrl: null,
   rawQr: null,
   qrGeneratedAt: null,
   qrExpiresInSec: 60,
   pairingCode: null,
-  phoneNumber: savedWa?.phoneNumber || null,
+  phoneNumber: hasInitialDiskCreds ? (savedWa?.phoneNumber || null) : null,
   deviceName: savedWa?.deviceName || 'Baileys Multi-Device Node',
   engine: 'Baileys WebSocket (WhatsApp Web Oficial)',
-  lastSync: savedWa?.phoneNumber
+  lastSync: hasInitialDiskCreds
     ? 'Sessão ativa salva · Reconectando socket com o celular...'
     : 'Iniciando protocolo Multi-Device...',
   errorMessage: null,
@@ -889,6 +955,9 @@ const waState: WhatsAppSessionState = {
 
 let activeSock: any = null;
 let isStartingSocket = false;
+let socketRestartPending = false;
+let lastSocketActivity = Date.now();
+let presenceKeepAliveInterval: NodeJS.Timeout | null = null;
 let reconnectTimeout: NodeJS.Timeout | null = null;
 let lastCredsSavePromise: Promise<void> = Promise.resolve();
 
@@ -3138,7 +3207,10 @@ async function handleDiscoveredChatNodes(sock: any, chats: any[]) {
 }
 
 async function startWhatsAppSocket(forceReset = false) {
-  if (isStartingSocket) return;
+  if (isStartingSocket) {
+    socketRestartPending = true;
+    return;
+  }
   isStartingSocket = true;
 
   try {
@@ -3147,13 +3219,18 @@ async function startWhatsAppSocket(forceReset = false) {
       reconnectTimeout = null;
     }
 
+    if (presenceKeepAliveInterval) {
+      clearInterval(presenceKeepAliveInterval);
+      presenceKeepAliveInterval = null;
+    }
+
     await lastCredsSavePromise.catch(() => {});
 
     if (activeSock) {
       try {
-        activeSock.ev.removeAllListeners();
-        activeSock.ws?.close();
-        activeSock.end(undefined);
+        activeSock.ev?.removeAllListeners?.();
+        activeSock.ws?.close?.();
+        activeSock.end?.(undefined);
       } catch {
         // ignore cleanup error
       }
@@ -3177,10 +3254,8 @@ async function startWhatsAppSocket(forceReset = false) {
 
     const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
     const hasStoredCreds = Boolean(state.creds?.registered || state.creds?.me);
-    const hasSavedConfig = Boolean(engineConfig.savedWhatsAppSession?.phoneNumber);
-    const isAlreadyRegistered = hasStoredCreds || hasSavedConfig;
 
-    if (isAlreadyRegistered) {
+    if (hasStoredCreds) {
       const savedUserJid = state.creds?.me?.id || engineConfig.savedWhatsAppSession?.userJid;
       const savedUserName = state.creds?.me?.name || 'WhatsApp Conectado';
       const resolvedPhone =
@@ -3198,8 +3273,14 @@ async function startWhatsAppSocket(forceReset = false) {
         waState.qrDataUrl = null;
         waState.lastSync = 'Sessão preservada ativa · Reconectando socket com o celular...';
       }
-    } else if (!waState.qrDataUrl) {
-      waState.status = 'connecting';
+    } else {
+      waState.phoneNumber = null;
+      if (!waState.qrDataUrl) {
+        waState.status = 'connecting';
+        waState.lastSync = 'Gerando QR Code para leitura...';
+      } else {
+        waState.status = 'qr_ready';
+      }
     }
 
     const version = await getBaileysVersion();
@@ -3216,19 +3297,22 @@ async function startWhatsAppSocket(forceReset = false) {
             : state.keys,
       },
       browser: Browsers
-        ? Browsers.ubuntu('Chrome')
-        : ['Ubuntu', 'Chrome', '20.0.04'],
+        ? Browsers.macOS('Desktop')
+        : ['Mac OS', 'Desktop', '14.4.1'],
       syncFullHistory: false,
       shouldSyncHistoryMessage: () => false,
       markOnlineOnConnect: true,
       generateHighQualityLinkPreview: false,
       connectTimeoutMs: 60000,
       defaultQueryTimeoutMs: 60000,
-      keepAliveIntervalMs: 15000,
+      keepAliveIntervalMs: 30000,
+      retryRequestDelayMs: 250,
+      maxMsgRetryCount: 5,
       getMessage: async () => ({ conversation: '' }),
     });
 
     activeSock = sock;
+    lastSocketActivity = Date.now();
 
     // Prevent Baileys' internal communities dirty-bit handler from throwing unhandled 500 errors
     if (sock.ws && typeof sock.ws.removeAllListeners === 'function') {
@@ -3236,6 +3320,7 @@ async function startWhatsAppSocket(forceReset = false) {
     }
 
     sock.ev.on('creds.update', () => {
+      lastSocketActivity = Date.now();
       lastCredsSavePromise = Promise.resolve(saveCreds())
         .then(() => syncAuthBackup())
         .catch(() => {});
@@ -3258,7 +3343,7 @@ async function startWhatsAppSocket(forceReset = false) {
         saveEngineConfig(engineConfig);
         syncAuthBackup();
 
-        if (waState.status === 'qr_ready') {
+        if (waState.status === 'qr_ready' || waState.status === 'connecting') {
           waState.status = 'reconnecting';
           waState.qrDataUrl = null;
           waState.lastSync = 'QR Code lido! Sincronizando chaves com seu WhatsApp...';
@@ -3267,6 +3352,7 @@ async function startWhatsAppSocket(forceReset = false) {
     });
 
     sock.ev.on('connection.update', async (update: any) => {
+      lastSocketActivity = Date.now();
       const { connection, lastDisconnect, qr } = update;
 
       if (qr) {
@@ -3283,11 +3369,9 @@ async function startWhatsAppSocket(forceReset = false) {
           waState.qrDataUrl = dataUrl;
           waState.rawQr = qr;
           waState.qrGeneratedAt = Date.now();
-          // Only show QR if device has never been registered
-          if (!state.creds?.me && !engineConfig.savedWhatsAppSession?.phoneNumber) {
-            waState.status = 'qr_ready';
-            waState.lastSync = 'Aguardando leitura do QR Code no WhatsApp';
-          }
+          waState.status = 'qr_ready';
+          waState.phoneNumber = null;
+          waState.lastSync = 'Aguardando leitura do QR Code no WhatsApp';
           waState.mode = 'baileys_live';
           waState.errorMessage = null;
         } catch {
@@ -3323,23 +3407,53 @@ async function startWhatsAppSocket(forceReset = false) {
         saveEngineConfig(engineConfig);
         syncAuthBackup();
 
+        // Start active presence keep-alive to keep session alive and prevent idle timeouts
+        if (presenceKeepAliveInterval) {
+          clearInterval(presenceKeepAliveInterval);
+          presenceKeepAliveInterval = null;
+        }
+        presenceKeepAliveInterval = setInterval(async () => {
+          if (activeSock && waState.status === 'connected') {
+            try {
+              await activeSock.sendPresenceUpdate('available');
+              lastSocketActivity = Date.now();
+            } catch {
+              // ignore presence ping failure
+            }
+          }
+        }, 20000);
+
         await fetchAndStoreParticipatingGroups(sock, state.creds?.me);
       }
 
       if (connection === 'close') {
+        lastSocketActivity = Date.now();
+        if (presenceKeepAliveInterval) {
+          clearInterval(presenceKeepAliveInterval);
+          presenceKeepAliveInterval = null;
+        }
+
         const statusCode =
           (lastDisconnect?.error as any)?.output?.statusCode ||
           (lastDisconnect?.error as any)?.data?.statusCode;
 
-        // CRITICAL: NEVER wipe auth files or credentials on close/reload!
-        // The WhatsApp app on the user's phone still holds the active session.
-        // Transient disconnects (401 during token refresh, 408 timeout, 428, 440, 515)
-        // must simply reconnect with the saved credentials.
-        const hasSession = Boolean(
-          state.creds?.me ||
-          state.creds?.registered ||
-          engineConfig.savedWhatsAppSession?.phoneNumber
-        );
+        const hasSession = Boolean(state.creds?.me || state.creds?.registered);
+
+        if (statusCode === 401 || statusCode === DisconnectReason?.loggedOut) {
+          // Session was explicitly logged out or invalidated on the phone — reset cleanly to show a fresh QR code
+          clearAuthDirectory(true);
+          engineConfig.savedWhatsAppSession = undefined;
+          saveEngineConfig(engineConfig);
+          waState.status = 'connecting';
+          waState.phoneNumber = null;
+          waState.qrDataUrl = null;
+          waState.lastSync = 'Sessão expirada no aparelho · Gerando novo QR Code...';
+          if (reconnectTimeout) clearTimeout(reconnectTimeout);
+          reconnectTimeout = setTimeout(() => {
+            startWhatsAppSocket(true);
+          }, 800);
+          return;
+        }
 
         if (hasSession) {
           waState.status = 'reconnecting';
@@ -3349,6 +3463,9 @@ async function startWhatsAppSocket(forceReset = false) {
           waState.deviceName =
             waState.deviceName || engineConfig.savedWhatsAppSession?.deviceName || 'Sessão Persistente';
           waState.lastSync = 'Reconectando sessão com o aparelho...';
+        } else {
+          waState.status = 'connecting';
+          waState.phoneNumber = null;
         }
 
         await lastCredsSavePromise.catch(() => {});
@@ -3356,10 +3473,11 @@ async function startWhatsAppSocket(forceReset = false) {
         const delayMs =
           statusCode === DisconnectReason?.restartRequired || statusCode === 515
             ? 200
-            : statusCode === 401
-            ? 2500
-            : 1200;
+            : 1000;
 
+        if (reconnectTimeout) {
+          clearTimeout(reconnectTimeout);
+        }
         reconnectTimeout = setTimeout(() => {
           startWhatsAppSocket(false);
         }, delayMs);
@@ -3367,20 +3485,24 @@ async function startWhatsAppSocket(forceReset = false) {
     });
 
     sock.ev.on('messaging-history.set', async (data: any) => {
+      lastSocketActivity = Date.now();
       if (Array.isArray(data?.chats)) {
         await handleDiscoveredChatNodes(sock, data.chats);
       }
     });
 
     sock.ev.on('chats.upsert', async (chats: any[]) => {
+      lastSocketActivity = Date.now();
       await handleDiscoveredChatNodes(sock, chats);
     });
 
     sock.ev.on('chats.update', async (chats: any[]) => {
+      lastSocketActivity = Date.now();
       await handleDiscoveredChatNodes(sock, chats);
     });
 
     sock.ev.on('messages.upsert', async (event: any) => {
+      lastSocketActivity = Date.now();
       const messages: any[] = event?.messages || [];
       for (const msg of messages) {
         const jid = msg?.key?.remoteJid;
@@ -3392,6 +3514,7 @@ async function startWhatsAppSocket(forceReset = false) {
     });
 
     sock.ev.on('messages.update', async (updates: any[]) => {
+      lastSocketActivity = Date.now();
       if (!Array.isArray(updates)) return;
       for (const item of updates) {
         if (item?.key && item?.update?.message) {
@@ -3405,6 +3528,7 @@ async function startWhatsAppSocket(forceReset = false) {
     });
 
     sock.ev.on('groups.upsert', async () => {
+      lastSocketActivity = Date.now();
       await fetchAndStoreParticipatingGroups(sock, state.creds?.me);
     });
   } catch (err: any) {
@@ -3414,6 +3538,12 @@ async function startWhatsAppSocket(forceReset = false) {
     }, 2500);
   } finally {
     isStartingSocket = false;
+    if (socketRestartPending) {
+      socketRestartPending = false;
+      setTimeout(() => {
+        startWhatsAppSocket(false);
+      }, 400);
+    }
   }
 }
 
@@ -3705,6 +3835,22 @@ async function pollTelegramUpdates() {
 
 setInterval(pollTelegramUpdates, 3000);
 
+// Watchdog de Auto-Recuperação: verifica e mantém a conexão do WhatsApp ativa quando credenciais reais existem
+setInterval(() => {
+  if (!hasValidCredsOnDisk()) return;
+  if (waState.status === 'qr_ready' || waState.status === 'connecting') return;
+
+  const isSocketOpen = Boolean(activeSock?.ws?.isOpen);
+  const isConnected = waState.status === 'connected' && isSocketOpen;
+
+  if (!isConnected && !isStartingSocket) {
+    const elapsed = Date.now() - lastSocketActivity;
+    if (elapsed > 12000) {
+      startWhatsAppSocket(false);
+    }
+  }
+}, 12000);
+
 async function bootstrapServer() {
   const app = express();
   app.use(express.json({ limit: '5mb' }));
@@ -3751,6 +3897,7 @@ async function bootstrapServer() {
       alertSettings: engineConfig.alertSettings,
       recentInterceptLogs,
       configSyncedAt,
+      authBundle: waState.status === 'connected' ? exportAuthBundle() : null,
     });
   });
 
@@ -3765,7 +3912,17 @@ async function bootstrapServer() {
       roleOverrides,
       selectedDraftPair,
       alertSettings,
+      authBundle,
     } = req.body || {};
+
+    // Restore WhatsApp cryptographic auth bundle if container restarted with empty disk
+    if (authBundle && typeof authBundle === 'object' && !hasValidCredsOnDisk()) {
+      const restored = importAuthBundle(authBundle);
+      if (restored) {
+        startWhatsAppSocket(false);
+      }
+    }
+
     const incomingIsDemo =
       credentials?.mercadoLivre?.sessionCookie?.includes('ml_sess_active_99812x') &&
       credentials?.shopee?.apiSecret?.startsWith('shp_live_98f7') &&

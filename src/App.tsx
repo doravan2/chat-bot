@@ -83,6 +83,7 @@ const STORAGE_KEYS = {
   RULES: 'cba_replica_rules_v3',
   HISTORY: 'cba_dispatch_history_v3',
   ALERTS: 'cba_alert_settings_v3',
+  AUTH_BUNDLE: 'cba_baileys_auth_bundle_v1',
 };
 
 const HISTORY_TTL_MS = 8 * 60 * 60 * 1000; // 8 hours
@@ -388,6 +389,14 @@ export default function App() {
   }, [alertSettings]);
 
   const syncEngineConfigToBackend = useCallback(() => {
+    let savedAuthBundle: Record<string, string> | null = null;
+    try {
+      const rawBundle = localStorage.getItem(STORAGE_KEYS.AUTH_BUNDLE);
+      if (rawBundle) {
+        savedAuthBundle = JSON.parse(rawBundle);
+      }
+    } catch {}
+
     fetch('/api/engine/sync', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -398,6 +407,7 @@ export default function App() {
         rooms,
         telegramBotToken: connections.telegram.botToken,
         alertSettings,
+        authBundle: savedAuthBundle,
         selectedDraftPair: {
           sourceRoomId: selectedSourceIds[0] || selectedSourceId,
           sourceRoomIds: selectedSourceIds,
@@ -535,22 +545,35 @@ export default function App() {
           });
         }
 
+        if (data.authBundle && typeof data.authBundle === 'object') {
+          try {
+            localStorage.setItem(STORAGE_KEYS.AUTH_BUNDLE, JSON.stringify(data.authBundle));
+          } catch {}
+        }
+
         if (data.status === 'reconnecting') {
           setConnections((prev) => ({
             ...prev,
             whatsapp: {
               ...prev.whatsapp,
               status: 'reconnecting',
+              phoneNumber: data.phoneNumber || prev.whatsapp.phoneNumber,
+              deviceName: data.deviceName || prev.whatsapp.deviceName,
               lastSync: data.lastSync || 'Sincronizando chaves com o aparelho...',
             },
           }));
-        } else if (data.status === 'qr_ready' || data.status === 'connecting') {
+        } else if (
+          data.status === 'qr_ready' ||
+          data.status === 'connecting' ||
+          data.status === 'disconnected'
+        ) {
           setConnections((prev) => ({
             ...prev,
             whatsapp: {
               ...prev.whatsapp,
               status: 'disconnected',
-              lastSync: data.lastSync || 'Aguardando leitura do QR Code',
+              phoneNumber: '',
+              lastSync: data.lastSync || 'Aguardando leitura do QR Code no WhatsApp',
             },
           }));
         } else if (data.status === 'connected') {
@@ -664,11 +687,15 @@ export default function App() {
     setIsGeneratingQr(true);
     setPairingCodeResult(null);
     hasNotifiedRealGroupsRef.current = false;
+    try {
+      localStorage.removeItem(STORAGE_KEYS.AUTH_BUNDLE);
+    } catch {}
     setConnections((prev) => ({
       ...prev,
       whatsapp: {
         ...prev.whatsapp,
         status: 'disconnected',
+        phoneNumber: '',
         qrSeed: Math.floor(100000 + Math.random() * 900000),
       },
     }));
@@ -693,6 +720,9 @@ export default function App() {
   const handleDisconnectWhatsApp = async () => {
     hasNotifiedRealGroupsRef.current = false;
     try {
+      localStorage.removeItem(STORAGE_KEYS.AUTH_BUNDLE);
+    } catch {}
+    try {
       await fetch('/api/whatsapp/disconnect', { method: 'POST' });
     } catch {
       // ignore
@@ -702,6 +732,7 @@ export default function App() {
       whatsapp: {
         ...prev.whatsapp,
         status: 'disconnected',
+        phoneNumber: '',
         lastSync: 'Sessão encerrada manualmente',
       },
     }));
@@ -4735,11 +4766,15 @@ export default function App() {
                     className={`px-3 py-1.5 rounded-lg font-mono text-xs font-semibold border ${
                       connections.whatsapp.status === 'connected'
                         ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
+                        : connections.whatsapp.status === 'reconnecting'
+                        ? 'bg-amber-500/15 text-amber-300 border-amber-500/30'
                         : 'bg-red-500/15 text-red-300 border-red-500/30'
                     }`}
                   >
                     {connections.whatsapp.status === 'connected'
                       ? `WhatsApp Principal ON (${connections.whatsapp.phoneNumber || 'Conectado'})`
+                      : connections.whatsapp.status === 'reconnecting'
+                      ? `WhatsApp Reconectando... (${connections.whatsapp.phoneNumber || 'Sincronizando'})`
                       : 'WhatsApp Principal Desconectado'}
                   </span>
 

@@ -221,10 +221,8 @@
     "recentAlerts": []
   },
   "selectedDraftPair": {
-    "sourceRoomId": "tg--1002059819521",
-    "sourceRoomIds": [
-      "tg--1002059819521"
-    ],
-    "destinationRoomId": "wa-120363412443597636@g.us"
+    "sourceRoomId": "wa-120363425505706835@newsletter",
+    "sourceRoomIds": [],
+    "destinationRoomId": "wa-120363425505706835@newsletter"
   }
 }
