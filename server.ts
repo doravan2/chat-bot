@@ -2009,7 +2009,7 @@ async function executeReplicationForRoute(params: {
         : undefined;
       const fallbackReal =
         draftDest ||
-        waState.syncedGroups.find((g) => g.role === 'admin') ||
+        waState.syncedGroups.find((g) => g.id !== route.sourceRoomId) ||
         waState.syncedGroups[0];
       if (fallbackReal) {
         destCode = fallbackReal.roomCode;
@@ -2377,7 +2377,10 @@ async function executeReplicationForRoute(params: {
     const destRoom = findRoomInAllLists(route.destinationRoomId);
     const destName = destRoom?.name || route.destinationRoomId;
     const rawErrMsg = err?.message || 'Erro ao enviar mensagem para o grupo destino.';
-    const actionableReason = `Falha ao entregar no grupo destino "${destName}": ${rawErrMsg} — verifique se o número/bot tem permissão de Administrador no grupo ou se a conexão está ativa.`;
+    let actionableReason = `Falha ao entregar no grupo destino "${destName}": ${rawErrMsg}`;
+    if (rawErrMsg.includes('bot is not a member of the channel chat') || rawErrMsg.includes('chat not found')) {
+      actionableReason = `Falha ao entregar no Telegram "${destName}": O bot não está presente no canal. Adicione o bot ao canal ou escolha um grupo de WhatsApp como destino.`;
+    }
 
     const errorHistoryItem: DispatchHistoryItem = {
       id: `hist-err-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
@@ -3842,7 +3845,7 @@ async function bootstrapServer() {
       category: 'test',
       reason:
         customReason ||
-        'Teste de alerta do painel — falha simulada ao entregar oferta no grupo destino (verifique permissões de administrador ou conexão).',
+        'Teste de alerta do painel — falha simulada ao entregar oferta no grupo destino (verifique a conexão de rede ou o grupo destino).',
       routeName: 'Rota de Teste (Simulação)',
       destinationName: 'Grupo VIP de Ofertas',
       productTitle: 'Produto de Teste — Validação de Alerta no WhatsApp',
@@ -3917,15 +3920,15 @@ async function bootstrapServer() {
     if (item.status === 'error' || !item.convertedText) {
       try {
         let activeRoute =
-          engineConfig.routes.find((r) => r.id === item.routeId && r.active) ||
-          engineConfig.routes.find((r) => r.sourceRoomId === item.sourceRoomId && r.active) ||
+          engineConfig.routes.find((r) => r.id === item.routeId) ||
+          engineConfig.routes.find((r) => r.sourceRoomId === item.sourceRoomId) ||
           engineConfig.routes.find((r) => r.active);
 
         const destRoomId =
-          activeRoute?.destinationRoomId ||
           item.destinationRoomId ||
+          activeRoute?.destinationRoomId ||
           engineConfig.selectedDraftPair?.destinationRoomId ||
-          waState.syncedGroups.find((g) => g.role === 'admin')?.id ||
+          waState.syncedGroups.find((g) => g.id !== item.sourceRoomId)?.id ||
           waState.syncedGroups[0]?.id;
 
         if (!destRoomId) {
@@ -4039,10 +4042,10 @@ async function bootstrapServer() {
         engineConfig.routes[0];
 
       const destRoomId =
-        activeRoute?.destinationRoomId ||
         item.destinationRoomId ||
+        activeRoute?.destinationRoomId ||
         engineConfig.selectedDraftPair?.destinationRoomId ||
-        waState.syncedGroups.find((g) => g.role === 'admin')?.id ||
+        waState.syncedGroups.find((g) => g.id !== item.sourceRoomId)?.id ||
         waState.syncedGroups[0]?.id;
 
       if (!destRoomId) {

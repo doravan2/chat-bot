@@ -355,7 +355,7 @@ export default function App() {
   );
   const [sourceBuilderSearch, setSourceBuilderSearch] = useState<string>('');
   const [selectedDestId, setSelectedDestId] = useState<string>(
-    INITIAL_ROOMS.find((r) => r.role === 'admin')?.id || INITIAL_ROOMS[1]?.id || ''
+    INITIAL_ROOMS[1]?.id || INITIAL_ROOMS[0]?.id || ''
   );
 
   // Sync to localStorage
@@ -601,9 +601,8 @@ export default function App() {
       setSelectedSourceId(rooms[0].id);
     }
     if (rooms.length > 0 && !rooms.some((r) => r.id === selectedDestId)) {
-      const adminRoom = rooms.find((r) => r.role === 'admin' && r.id !== selectedSourceId);
       const fallbackRoom = rooms.find((r) => r.id !== selectedSourceId) || rooms[0];
-      setSelectedDestId(adminRoom?.id || fallbackRoom.id);
+      setSelectedDestId(fallbackRoom.id);
     }
   }, [rooms, selectedSourceId, selectedDestId]);
 
@@ -869,9 +868,9 @@ export default function App() {
       // ignore
     }
     triggerToast(
-      `Permissão de "${room.name}" alterada para ${
-        newRole === 'admin' ? 'Administrador (Destino liberado)' : 'Membro (Apenas Fonte)'
-      }.`
+      `Papel de "${room.name}" alterado para ${
+        newRole === 'admin' ? 'Administrador' : 'Membro'
+      }. Envio habilitado normalmente.`
     );
   };
 
@@ -937,9 +936,8 @@ export default function App() {
     }
   };
 
-  // Handlers: Module 4 (Traffic Routing — Multi-Source Capable)
-  const adminDestinationRooms = useMemo(
-    () => rooms.filter((r) => r.role === 'admin'),
+  const destinationRooms = useMemo(
+    () => rooms,
     [rooms]
   );
 
@@ -994,10 +992,6 @@ export default function App() {
 
   const handleSelectDestInTopBuilder = (newDstId: string) => {
     setSelectedDestId(newDstId);
-    const dstRoom = rooms.find((r) => r.id === newDstId);
-    if (dstRoom && dstRoom.role !== 'admin') {
-      handleToggleRoomRole(dstRoom);
-    }
   };
 
   const handleQuickBindGroupAsSource = (groupId: string, groupName: string) => {
@@ -1005,8 +999,8 @@ export default function App() {
     setSelectedSourceIds((prev) => (prev.includes(groupId) ? prev : [...prev, groupId]));
     const destRoom =
       rooms.find((r) => r.id === selectedDestId && r.id !== groupId) ||
-      rooms.find((r) => r.role === 'admin' && r.id !== groupId) ||
-      rooms.find((r) => r.id !== groupId);
+      rooms.find((r) => r.id !== groupId) ||
+      rooms[0];
 
     if (!destRoom) {
       triggerToast('Sincronize pelo menos 2 grupos para definir Origem e Destino.');
@@ -1051,10 +1045,6 @@ export default function App() {
         'Selecione pelo menos 1 grupo/canal Fonte (diferente do Destino) e 1 grupo de Destino.'
       );
       return;
-    }
-
-    if (destRoom.role !== 'admin') {
-      handleToggleRoomRole(destRoom);
     }
 
     const defaultLabel = formatRouteAutoName(validSourceIds, destRoom.id);
@@ -1233,7 +1223,7 @@ export default function App() {
           routeId: matchingRoute?.id,
           destinationRoomId:
             matchingRoute?.destinationRoomId ||
-            adminDestinationRooms[0]?.id ||
+            destinationRooms.find((r) => r.id !== selectedSourceId)?.id ||
             rooms[0]?.id,
         }),
       });
@@ -1970,9 +1960,9 @@ export default function App() {
                   </span>
                 </div>
                 <div className="flex items-center justify-between">
-                  <span>Canais de Destino (Adm)</span>
+                  <span>Salas de Destino</span>
                   <span className="font-mono text-slate-200 tabular-nums">
-                    {adminDestinationRooms.length} canais
+                    {destinationRooms.length} salas
                   </span>
                 </div>
                 <button
@@ -3052,7 +3042,7 @@ export default function App() {
                               <button
                                 type="button"
                                 onClick={() => handleToggleRoomRole(room)}
-                                title="Clique para alternar entre Administrador (Destino) e Membro (Fonte)"
+                                title="Clique para alternar papel (Membro / Administrador) — envio liberado em ambos"
                                 className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded border text-xs font-medium transition-colors cursor-pointer ${
                                   room.role === 'admin'
                                     ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-300 hover:bg-emerald-500/25'
@@ -3062,8 +3052,8 @@ export default function App() {
                                 <ShieldCheck className="w-3.5 h-3.5" />
                                 <span>
                                   {room.role === 'admin'
-                                    ? 'Administrador (Envio Liberado)'
-                                    : 'Membro (Clique p/ Tornar Admin)'}
+                                    ? 'Administrador'
+                                    : 'Membro (Envio Liberado)'}
                                 </span>
                               </button>
                             </td>
@@ -3256,20 +3246,24 @@ export default function App() {
                           {rooms.length === 0 && (
                             <option value="">Sincronize seus grupos primeiro...</option>
                           )}
-                          <optgroup label="Canais/Grupos com Permissão de Administrador">
-                            {adminDestinationRooms.map((room) => (
-                              <option key={room.id} value={room.id}>
-                                [{room.platform.toUpperCase()}] {room.name} (Admin)
-                              </option>
-                            ))}
-                          </optgroup>
-                          {rooms.some((r) => r.role !== 'admin') && (
-                            <optgroup label="Outros Grupos Sincronizados (Autorizar Envio ao Selecionar)">
+                          {rooms.some((r) => r.platform === 'whatsapp') && (
+                            <optgroup label="WhatsApp (Envio liberado para membros e admins)">
                               {rooms
-                                .filter((r) => r.role !== 'admin')
+                                .filter((r) => r.platform === 'whatsapp')
                                 .map((room) => (
                                   <option key={room.id} value={room.id}>
-                                    [{room.platform.toUpperCase()}] {room.name} (Autorizar Destino)
+                                    [WHATSAPP] {room.name} {room.kind === 'channel' ? '(Canal)' : '(Grupo)'}
+                                  </option>
+                                ))}
+                            </optgroup>
+                          )}
+                          {rooms.some((r) => r.platform === 'telegram') && (
+                            <optgroup label="Telegram (Requer bot adicionado ao canal)">
+                              {rooms
+                                .filter((r) => r.platform === 'telegram')
+                                .map((room) => (
+                                  <option key={room.id} value={room.id}>
+                                    [TELEGRAM] {room.name}
                                   </option>
                                 ))}
                             </optgroup>
@@ -4909,7 +4903,7 @@ export default function App() {
                           Erro ao Enviar para o Grupo Destino
                         </div>
                         <p className="text-[11px] text-slate-400">
-                          Avisa quando o envio para o grupo destino falhar (falta de permissão de admin, grupo removido ou queda de sessão).
+                          Avisa quando o envio para o grupo destino falhar (grupo fechado para postagens, grupo removido ou queda de sessão).
                         </p>
                       </div>
                       <button
@@ -5269,8 +5263,8 @@ export default function App() {
                         <span className="text-slate-200">{rooms.length}</span>
                       </div>
                       <div className="flex items-center justify-between">
-                        <span className="text-slate-400">Canais Destino (Adm):</span>
-                        <span className="text-emerald-400">{adminDestinationRooms.length}</span>
+                        <span className="text-slate-400">Salas para Envio:</span>
+                        <span className="text-emerald-400">{rooms.length}</span>
                       </div>
                     </div>
                   </div>
