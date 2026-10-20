@@ -1,0 +1,6 @@
+{
+  "name": "Chat Bot Automático",
+  "description": "Plataforma SaaS de automação, captura e conversão em tempo real de ofertas para afiliados no WhatsApp e Telegram.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
