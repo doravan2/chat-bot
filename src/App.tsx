@@ -304,7 +304,6 @@ export default function App() {
   const [isSendingTestAlert, setIsSendingTestAlert] = useState<boolean>(false);
 
   // Real-time QR & Backend Session State
-  const [qrScanMethod, setQrScanMethod] = useState<QrScanMethod>('baileys_qr');
   const [serverQrDataUrl, setServerQrDataUrl] = useState<string | null>(null);
   const [qrRemainingSec, setQrRemainingSec] = useState<number>(60);
   const [serverQrMode, setServerQrMode] = useState<'baileys_live' | 'camera_pair'>('baileys_live');
@@ -607,12 +606,6 @@ export default function App() {
       setSelectedDestId(adminRoom?.id || fallbackRoom.id);
     }
   }, [rooms, selectedSourceId, selectedDestId]);
-
-  const cameraScanUrl = useMemo(() => {
-    const origin =
-      typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000';
-    return `${origin}/api/whatsapp/mobile-confirm?seed=${connections.whatsapp.qrSeed}`;
-  }, [connections.whatsapp.qrSeed]);
 
   // Live parsed output for the simulator (instant local fallback + official server API conversion)
   const localParsedResult = useMemo(() => {
@@ -2642,38 +2635,10 @@ export default function App() {
                   </div>
                 </div>
 
-                <div className="inline-flex flex-wrap items-center gap-1 p-1 bg-[#0B0F19] border border-slate-800 rounded-lg self-start">
-                  <button
-                    type="button"
-                    onClick={() => setQrScanMethod('baileys_qr')}
-                    className={`px-3 py-1.5 rounded-md text-xs font-medium flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap ${
-                      qrScanMethod === 'baileys_qr'
-                        ? 'bg-emerald-500 text-slate-950 font-semibold'
-                        : 'text-slate-400 hover:text-slate-200'
-                    }`}
-                  >
-                    <QrCode className="w-3.5 h-3.5" />
-                    <span>QR Code Oficial WhatsApp (Baileys)</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => setQrScanMethod('camera_qr')}
-                    className={`px-3 py-1.5 rounded-md text-xs font-medium flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap ${
-                      qrScanMethod === 'camera_qr'
-                        ? 'bg-emerald-500 text-slate-950 font-semibold'
-                        : 'text-slate-400 hover:text-slate-200'
-                    }`}
-                  >
-                    <Smartphone className="w-3.5 h-3.5" />
-                    <span>QR Câmera Mobile</span>
-                  </button>
-                </div>
-
                 <div className="flex flex-col sm:flex-row items-center sm:items-start gap-6 py-1">
                   <WhatsAppQrMatrix
-                    qrDataUrl={qrScanMethod === 'baileys_qr' ? serverQrDataUrl : null}
-                    fallbackPayload={cameraScanUrl}
+                    qrDataUrl={serverQrDataUrl}
+                    fallbackPayload=""
                     status={
                       connections.whatsapp.status === 'connected'
                         ? 'connected'
@@ -2682,39 +2647,28 @@ export default function App() {
                         : 'qr_ready'
                     }
                     remainingSec={qrRemainingSec}
-                    mode={qrScanMethod === 'baileys_qr' ? serverQrMode : 'camera_pair'}
+                    mode="baileys_live"
                     onRefreshQr={handleRefreshQrCode}
                     isRefreshing={isGeneratingQr}
                   />
 
                   <div className="flex-1 space-y-4 text-sm w-full">
-                    {qrScanMethod === 'baileys_qr' ? (
-                      <div className="p-3.5 rounded-lg bg-[#0B0F19] border border-slate-800 space-y-2 text-xs">
-                        <div className="font-semibold text-white">
-                          Escaneie pelo aplicativo do WhatsApp:
-                        </div>
-                        <ol className="list-decimal list-inside space-y-1.5 text-slate-300 leading-relaxed">
-                          <li>Abra o <strong>WhatsApp</strong> no seu celular</li>
-                          <li>
-                            Toque em <strong>Mais opções (⋮)</strong> ou{' '}
-                            <strong>Configurações</strong> e selecione{' '}
-                            <strong className="text-emerald-400">Aparelhos conectados</strong>
-                          </li>
-                          <li>
-                            Toque em <strong>Conectar um aparelho</strong> e aponte para o QR Code ao lado.
-                          </li>
-                        </ol>
+                    <div className="p-3.5 rounded-lg bg-[#0B0F19] border border-slate-800 space-y-2 text-xs">
+                      <div className="font-semibold text-white">
+                        Escaneie pelo aplicativo do WhatsApp:
                       </div>
-                    ) : (
-                      <div className="p-3.5 rounded-lg bg-[#0B0F19] border border-emerald-500/30 space-y-2 text-xs">
-                        <div className="font-semibold text-emerald-400">
-                          Pareamento Rápido pela Câmera do Celular:
-                        </div>
-                        <p className="text-slate-300 leading-relaxed">
-                          Aponte a câmera padrão do celular para o QR Code ao lado e abra o link exibido para confirmar o pareamento instantâneo.
-                        </p>
-                      </div>
-                    )}
+                      <ol className="list-decimal list-inside space-y-1.5 text-slate-300 leading-relaxed">
+                        <li>Abra o <strong>WhatsApp</strong> no seu celular</li>
+                        <li>
+                          Toque em <strong>Mais opções (⋮)</strong> ou{' '}
+                          <strong>Configurações</strong> e selecione{' '}
+                          <strong className="text-emerald-400">Aparelhos conectados</strong>
+                        </li>
+                        <li>
+                          Toque em <strong>Conectar um aparelho</strong> e aponte para o QR Code ao lado.
+                        </li>
+                      </ol>
+                    </div>
 
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
                       <div className="p-3 rounded-lg bg-[#0B0F19] border border-slate-800/80">

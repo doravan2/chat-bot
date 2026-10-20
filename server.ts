@@ -46,6 +46,7 @@ const {
 } = Baileys;
 
 const AUTH_DIR = path.resolve(process.cwd(), '.baileys_auth');
+const AUTH_BACKUP_DIR = path.resolve(process.cwd(), '.baileys_auth_backup');
 const ENGINE_CONFIG_PATH = path.resolve(process.cwd(), '.engine_config.json');
 const ENGINE_HISTORY_PATH = path.resolve(process.cwd(), '.engine_history.json');
 const ENGINE_DISPATCHED_OFFERS_PATH = path.resolve(process.cwd(), '.engine_dispatched_offers.json');
@@ -96,6 +97,12 @@ interface EngineRuntimeConfig {
     sourceRoomIds?: string[];
     destinationRoomId: string;
   };
+  savedWhatsAppSession?: {
+    phoneNumber: string;
+    deviceName: string;
+    userJid: string;
+    connectedAt: number;
+  };
 }
 
 let configSyncedAt = 0;
@@ -133,6 +140,7 @@ function loadEngineConfig(): EngineRuntimeConfig {
             : [],
         },
         selectedDraftPair: parsed.selectedDraftPair,
+        savedWhatsAppSession: parsed.savedWhatsAppSession,
       };
     }
   } catch {
@@ -802,17 +810,63 @@ interface WhatsAppSessionState {
   lastInterceptStatus: string;
 }
 
+function syncAuthBackup() {
+  try {
+    if (!fs.existsSync(AUTH_DIR)) return;
+    if (!fs.existsSync(AUTH_BACKUP_DIR)) {
+      fs.mkdirSync(AUTH_BACKUP_DIR, { recursive: true });
+    }
+    const credsPath = path.join(AUTH_DIR, 'creds.json');
+    if (fs.existsSync(credsPath)) {
+      fs.copyFileSync(credsPath, path.join(AUTH_BACKUP_DIR, 'creds.json'));
+    }
+  } catch {
+    // ignore backup sync error
+  }
+}
+
+function restoreAuthFromBackup() {
+  try {
+    const mainCreds = path.join(AUTH_DIR, 'creds.json');
+    const backupCreds = path.join(AUTH_BACKUP_DIR, 'creds.json');
+    if (!fs.existsSync(mainCreds) && fs.existsSync(backupCreds)) {
+      if (!fs.existsSync(AUTH_DIR)) {
+        fs.mkdirSync(AUTH_DIR, { recursive: true });
+      }
+      fs.copyFileSync(backupCreds, mainCreds);
+    }
+  } catch {
+    // ignore backup restore error
+  }
+}
+
+function clearAuthDirectory(forceBackupPurge = false) {
+  try {
+    if (fs.existsSync(AUTH_DIR)) {
+      fs.rmSync(AUTH_DIR, { recursive: true, force: true });
+    }
+    if (forceBackupPurge && fs.existsSync(AUTH_BACKUP_DIR)) {
+      fs.rmSync(AUTH_BACKUP_DIR, { recursive: true, force: true });
+    }
+  } catch {
+    // ignore auth dir cleanup error
+  }
+}
+
+const savedWa = engineConfig.savedWhatsAppSession;
 const waState: WhatsAppSessionState = {
-  status: 'connecting',
+  status: savedWa?.phoneNumber ? 'reconnecting' : 'connecting',
   qrDataUrl: null,
   rawQr: null,
   qrGeneratedAt: null,
   qrExpiresInSec: 60,
   pairingCode: null,
-  phoneNumber: null,
-  deviceName: 'Baileys Multi-Device Node',
+  phoneNumber: savedWa?.phoneNumber || null,
+  deviceName: savedWa?.deviceName || 'Baileys Multi-Device Node',
   engine: 'Baileys WebSocket (WhatsApp Web Oficial)',
-  lastSync: 'Iniciando protocolo Multi-Device...',
+  lastSync: savedWa?.phoneNumber
+    ? 'Sessão ativa salva · Reconectando socket com o celular...'
+    : 'Iniciando protocolo Multi-Device...',
   errorMessage: null,
   syncedGroups: [...(engineConfig.syncedNewsletters || [])],
   discoveredTelegramRooms: [...(engineConfig.discoveredTelegramRooms || [])],
@@ -824,16 +878,6 @@ let activeSock: any = null;
 let isStartingSocket = false;
 let reconnectTimeout: NodeJS.Timeout | null = null;
 let lastCredsSavePromise: Promise<void> = Promise.resolve();
-
-function clearAuthDirectory() {
-  try {
-    if (fs.existsSync(AUTH_DIR)) {
-      fs.rmSync(AUTH_DIR, { recursive: true, force: true });
-    }
-  } catch {
-    // ignore auth dir cleanup error
-  }
-}
 
 function formatJidToPhone(jid?: string): string {
   if (!jid) return 'Conectado';
@@ -2954,7 +2998,9 @@ async function startWhatsAppSocket(forceReset = false) {
     }
 
     if (forceReset) {
-      clearAuthDirectory();
+      clearAuthDirectory(true);
+      engineConfig.savedWhatsAppSession = undefined;
+      saveEngineConfig(engineConfig);
       waState.phoneNumber = null;
       waState.pairingCode = null;
       waState.syncedGroups = [...(engineConfig.syncedNewsletters || [])];
@@ -2962,16 +3008,34 @@ async function startWhatsAppSocket(forceReset = false) {
       waState.rawQr = null;
       waState.status = 'connecting';
       waState.lastSync = 'Gerando novo QR Code...';
+    } else {
+      restoreAuthFromBackup();
     }
 
     const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
-    const isAlreadyRegistered = Boolean(state.creds?.registered || state.creds?.me);
+    const hasStoredCreds = Boolean(state.creds?.registered || state.creds?.me);
+    const hasSavedConfig = Boolean(engineConfig.savedWhatsAppSession?.phoneNumber);
+    const isAlreadyRegistered = hasStoredCreds || hasSavedConfig;
 
-    if (isAlreadyRegistered && waState.status !== 'connected') {
-      waState.status = 'reconnecting';
-      waState.qrDataUrl = null;
-      waState.lastSync = 'Finalizando sincronização criptográfica com o celular...';
-    } else if (!isAlreadyRegistered && !waState.qrDataUrl) {
+    if (isAlreadyRegistered) {
+      const savedUserJid = state.creds?.me?.id || engineConfig.savedWhatsAppSession?.userJid;
+      const savedUserName = state.creds?.me?.name || 'WhatsApp Conectado';
+      const resolvedPhone =
+        (savedUserJid ? formatJidToPhone(savedUserJid) : null) ||
+        engineConfig.savedWhatsAppSession?.phoneNumber ||
+        waState.phoneNumber;
+
+      waState.phoneNumber = resolvedPhone;
+      waState.deviceName =
+        engineConfig.savedWhatsAppSession?.deviceName ||
+        `${savedUserName} · Sessão Persistente`;
+
+      if (waState.status !== 'connected') {
+        waState.status = 'reconnecting';
+        waState.qrDataUrl = null;
+        waState.lastSync = 'Sessão preservada ativa · Reconectando socket com o celular...';
+      }
+    } else if (!waState.qrDataUrl) {
       waState.status = 'connecting';
     }
 
@@ -3009,11 +3073,33 @@ async function startWhatsAppSocket(forceReset = false) {
     }
 
     sock.ev.on('creds.update', () => {
-      lastCredsSavePromise = Promise.resolve(saveCreds()).catch(() => {});
-      if (state.creds?.me && waState.status === 'qr_ready') {
-        waState.status = 'reconnecting';
-        waState.qrDataUrl = null;
-        waState.lastSync = 'QR Code lido! Sincronizando chaves com seu WhatsApp...';
+      lastCredsSavePromise = Promise.resolve(saveCreds())
+        .then(() => syncAuthBackup())
+        .catch(() => {});
+
+      if (state.creds?.me) {
+        const userJid = state.creds.me.id;
+        const userName = state.creds.me.name || 'WhatsApp Conectado';
+        const formattedPhone = formatJidToPhone(userJid);
+        const deviceLabel = `${userName} · Sessão Persistente`;
+
+        waState.phoneNumber = formattedPhone;
+        waState.deviceName = deviceLabel;
+
+        engineConfig.savedWhatsAppSession = {
+          phoneNumber: formattedPhone,
+          deviceName: deviceLabel,
+          userJid,
+          connectedAt: Date.now(),
+        };
+        saveEngineConfig(engineConfig);
+        syncAuthBackup();
+
+        if (waState.status === 'qr_ready') {
+          waState.status = 'reconnecting';
+          waState.qrDataUrl = null;
+          waState.lastSync = 'QR Code lido! Sincronizando chaves com seu WhatsApp...';
+        }
       }
     });
 
@@ -3034,10 +3120,13 @@ async function startWhatsAppSocket(forceReset = false) {
           waState.qrDataUrl = dataUrl;
           waState.rawQr = qr;
           waState.qrGeneratedAt = Date.now();
-          waState.status = 'qr_ready';
+          // Only show QR if device has never been registered
+          if (!state.creds?.me && !engineConfig.savedWhatsAppSession?.phoneNumber) {
+            waState.status = 'qr_ready';
+            waState.lastSync = 'Aguardando leitura do QR Code no WhatsApp';
+          }
           waState.mode = 'baileys_live';
           waState.errorMessage = null;
-          waState.lastSync = 'Aguardando leitura do QR Code no WhatsApp';
         } catch {
           // ignore QR generation error
         }
@@ -3047,18 +3136,29 @@ async function startWhatsAppSocket(forceReset = false) {
         const userJid = sock.user?.id || state.creds?.me?.id;
         const userName =
           sock.user?.name || state.creds?.me?.name || 'WhatsApp Conectado';
+        const formattedPhone = formatJidToPhone(userJid);
+        const deviceLabel = `${userName} · Sessão Persistente`;
 
         waState.status = 'connected';
         waState.qrDataUrl = null;
         waState.rawQr = null;
         waState.pairingCode = null;
         waState.errorMessage = null;
-        waState.phoneNumber = formatJidToPhone(userJid);
-        waState.deviceName = `${userName} · Sessão Persistente`;
+        waState.phoneNumber = formattedPhone;
+        waState.deviceName = deviceLabel;
         waState.lastSync = `Conectado às ${new Date().toLocaleTimeString('pt-BR', {
           hour: '2-digit',
           minute: '2-digit',
         })} · Sincronizando grupos e canais...`;
+
+        engineConfig.savedWhatsAppSession = {
+          phoneNumber: formattedPhone,
+          deviceName: deviceLabel,
+          userJid: userJid || '',
+          connectedAt: Date.now(),
+        };
+        saveEngineConfig(engineConfig);
+        syncAuthBackup();
 
         await fetchAndStoreParticipatingGroups(sock, state.creds?.me);
       }
@@ -3068,37 +3168,38 @@ async function startWhatsAppSocket(forceReset = false) {
           (lastDisconnect?.error as any)?.output?.statusCode ||
           (lastDisconnect?.error as any)?.data?.statusCode;
 
-        const isLoggedOut = statusCode === DisconnectReason?.loggedOut || statusCode === 401;
+        // CRITICAL: NEVER wipe auth files or credentials on close/reload!
+        // The WhatsApp app on the user's phone still holds the active session.
+        // Transient disconnects (401 during token refresh, 408 timeout, 428, 440, 515)
+        // must simply reconnect with the saved credentials.
+        const hasSession = Boolean(
+          state.creds?.me ||
+          state.creds?.registered ||
+          engineConfig.savedWhatsAppSession?.phoneNumber
+        );
 
-        if (isLoggedOut) {
-          clearAuthDirectory();
-          waState.status = 'disconnected';
+        if (hasSession) {
+          waState.status = 'reconnecting';
           waState.qrDataUrl = null;
-          waState.phoneNumber = null;
-          waState.syncedGroups = [...(engineConfig.syncedNewsletters || [])];
-          waState.lastSync = 'Sessão desconectada pelo aparelho. Gerando novo QR...';
-          reconnectTimeout = setTimeout(() => {
-            startWhatsAppSocket(true);
-          }, 600);
-        } else {
-          const hasMe = Boolean(state.creds?.me || state.creds?.registered);
-          if (hasMe) {
-            waState.status = 'reconnecting';
-            waState.qrDataUrl = null;
-            waState.lastSync = 'Finalizando pareamento com o aparelho (Handshake 515)...';
-          }
-
-          await lastCredsSavePromise.catch(() => {});
-
-          const delayMs =
-            statusCode === DisconnectReason?.restartRequired || statusCode === 515
-              ? 150
-              : 1200;
-
-          reconnectTimeout = setTimeout(() => {
-            startWhatsAppSocket(false);
-          }, delayMs);
+          waState.phoneNumber =
+            waState.phoneNumber || engineConfig.savedWhatsAppSession?.phoneNumber || null;
+          waState.deviceName =
+            waState.deviceName || engineConfig.savedWhatsAppSession?.deviceName || 'Sessão Persistente';
+          waState.lastSync = 'Reconectando sessão com o aparelho...';
         }
+
+        await lastCredsSavePromise.catch(() => {});
+
+        const delayMs =
+          statusCode === DisconnectReason?.restartRequired || statusCode === 515
+            ? 200
+            : statusCode === 401
+            ? 2500
+            : 1200;
+
+        reconnectTimeout = setTimeout(() => {
+          startWhatsAppSocket(false);
+        }, delayMs);
       }
     });
 
@@ -4186,7 +4287,9 @@ async function bootstrapServer() {
       }
       activeSock = null;
     }
-    clearAuthDirectory();
+    clearAuthDirectory(true);
+    engineConfig.savedWhatsAppSession = undefined;
+    saveEngineConfig(engineConfig);
     waState.status = 'disconnected';
     waState.qrDataUrl = null;
     waState.rawQr = null;
