@@ -12,7 +12,9 @@ const ENGINE_CONFIG_PATH = path.resolve(process.cwd(), '.engine_config.json');
 export const pgPool = process.env.DATABASE_URL
   ? new Pool({
       connectionString: process.env.DATABASE_URL,
-      ssl: { rejectUnauthorized: false },
+      ssl: {
+        rejectUnauthorized: false,
+      },
       max: 10,
       idleTimeoutMillis: 30000,
     })
@@ -25,13 +27,18 @@ let lastSavedConfigRaw = '';
 async function ensureDatabaseTable() {
   if (!pgPool || dbInitialized) return;
   try {
-    await pgPool.query(`
-      CREATE TABLE IF NOT EXISTS session_auth (
-        id VARCHAR(255) PRIMARY KEY,
-        data JSONB NOT NULL
-      );
-    `);
-    dbInitialized = true;
+    const client = await pgPool.connect();
+    try {
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS session_auth (
+          id VARCHAR(255) PRIMARY KEY,
+          data JSONB NOT NULL
+        );
+      `);
+      dbInitialized = true;
+    } finally {
+      client.release();
+    }
   } catch (err) {
     console.error('Erro ao iniciar tabela no Supabase:', err);
   }
