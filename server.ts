@@ -6,6 +6,7 @@ import crypto from 'crypto';
 import QRCode from 'qrcode';
 import pino from 'pino';
 import * as Baileys from '@whiskeysockets/baileys';
+import { usePostgresAuthState } from './postgresAuth';
 import {
   AffiliateCredentials,
   AlertDispatchLog,
@@ -3252,7 +3253,7 @@ async function startWhatsAppSocket(forceReset = false) {
       restoreAuthFromBackup();
     }
 
-    const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
+    const { state, saveCreds } = await usePostgresAuthState(engineConfig, forceReset);
     const hasStoredCreds = Boolean(state.creds?.registered || state.creds?.me);
 
     if (hasStoredCreds) {
